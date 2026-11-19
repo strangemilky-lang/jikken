@@ -17,6 +17,7 @@ import {
 } from './fairy';
 import { calcHeroStats, clamp, generateItem, getSalvageValue, uid } from './items';
 import { createEnemy } from './maze';
+import { isSanctumFloor, SANCTUM_INTERVAL } from './sanctum';
 import type { EquippedSet, GameState, Item, OfflineSummary, SlotKey } from './types';
 
 export function createDefaultState(): GameState {
@@ -39,6 +40,8 @@ export function createDefaultState(): GameState {
     kills: 0,
     chests: 0,
     mythicChests: 0,
+    sanctumKeys: 0,
+    clearedSanctumMax: 0,
     cleared100: false,
     maxDmg: 0,
     soundOn: false,
@@ -123,14 +126,34 @@ export function parseSaveState(rawJson: string): GameState | null {
     const overflowToStash = rawInv.slice(MAX_BAG_SIZE);
     const stash = [...overflowToStash, ...rawStash].slice(0, MAX_STASH_SIZE);
 
+    const inferredSanctumCleared =
+      Math.floor(Math.max(0, maxStage - 1) / SANCTUM_INTERVAL) * SANCTUM_INTERVAL;
+    let clearedSanctumMax =
+      typeof parsed.clearedSanctumMax === 'number' && Number.isFinite(parsed.clearedSanctumMax)
+        ? Math.floor(Math.max(0, parsed.clearedSanctumMax) / SANCTUM_INTERVAL) * SANCTUM_INTERVAL
+        : inferredSanctumCleared;
+    if (cleared100 && clearedSanctumMax < 100) {
+      clearedSanctumMax = 100;
+    }
+
+    let stage = Math.max(1, Math.floor(parsed.stage));
+    if (typeof parsed.clearedSanctumMax !== 'number' && isSanctumFloor(stage) && clearedSanctumMax < stage) {
+      stage = Math.max(1, stage - 1);
+    }
+
     return {
       ...def,
       ...(parsed as Partial<GameState>),
-      stage: Math.max(1, Math.floor(parsed.stage)),
+      stage,
       maxStage,
       floorEncounters: typeof parsed.floorEncounters === 'number' ? Math.max(0, Math.floor(parsed.floorEncounters)) : 0,
       chests: typeof parsed.chests === 'number' ? Math.max(0, parsed.chests) : 0,
       mythicChests: typeof parsed.mythicChests === 'number' ? Math.max(0, parsed.mythicChests) : 0,
+      sanctumKeys:
+        typeof parsed.sanctumKeys === 'number' && Number.isFinite(parsed.sanctumKeys)
+          ? Math.max(0, Math.floor(parsed.sanctumKeys))
+          : 0,
+      clearedSanctumMax,
       maxDmg: typeof parsed.maxDmg === 'number' ? Math.max(0, parsed.maxDmg) : 0,
       cleared100,
       equipped: migratedEquipped,
@@ -167,10 +190,11 @@ export function computeOfflineRewards(state: GameState, elapsedSec: number): Off
   const cappedSec = clamp(elapsedSec, 0, MAX_OFFLINE_SEC);
   if (cappedSec < 10) return null;
 
+  const effectiveStage = isSanctumFloor(state.stage) ? Math.max(1, state.stage - 1) : state.stage;
   const fairyProfile = getFairyProfile(getFairyRank(state.maxStage, state.cleared100));
   const stats = calcHeroStats(state.equipped, state.cleared100);
-  const enemySample = createEnemy(state.stage, false);
-  const bossSample = createEnemy(state.stage, true);
+  const enemySample = createEnemy(effectiveStage, false);
+  const bossSample = createEnemy(effectiveStage, true);
 
   const avgHp = (enemySample.maxHp * 4 + bossSample.maxHp) / 5;
   const estPower = Math.max(1, stats.offlinePower);
@@ -191,10 +215,10 @@ export function computeOfflineRewards(state: GameState, elapsedSec: number): Off
 
   for (let i = 0; i < rollLimit; i++) {
     const isBoss = (i % 6 === 5);
-    gainedStones += Math.round((isBoss ? 2.8 : 1.4) + state.stage * (isBoss ? 1.2 : 0.58));
+    gainedStones += Math.round((isBoss ? 2.8 : 1.4) + effectiveStage * (isBoss ? 1.2 : 0.58));
     if (isBoss) gainedChests += 1;
     if (Math.random() < (isBoss ? 0.78 : 0.28)) {
-      const it = generateItem({ stage: state.stage, isBoss, cleared100: state.cleared100 });
+      const it = generateItem({ stage: effectiveStage, isBoss, cleared100: state.cleared100 });
       gainedItems.push(it);
     }
   }

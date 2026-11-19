@@ -19,6 +19,7 @@ import type {
   RarityId,
   SalvageBulkMode,
   SlotKey,
+  SortMode,
   SubStat,
   SubStatKey,
 } from './types';
@@ -444,4 +445,33 @@ export function commitChestItemToState(
   }
   st.inventory.unshift(item);
   return { salvagedDust: 0, bagFull: false };
+}
+
+export function filterAndSortStorageItems(
+  items: Item[],
+  filterSlot: 'all' | SlotKey,
+  sortMode: SortMode,
+): Item[] {
+  const filtered = items.filter((it) => filterSlot === 'all' || it.slot === filterSlot);
+  if (sortMode === 'rarity') {
+    return [...filtered].sort((a, b) => b.rarity - a.rarity || b.stage - a.stage);
+  }
+  if (sortMode === 'stage') {
+    return [...filtered].sort((a, b) => b.stage - a.stage || b.rarity - a.rarity);
+  }
+  if (sortMode === 'level') {
+    return [...filtered].sort((a, b) => b.level - a.level || b.rarity - a.rarity);
+  }
+  return filtered;
+}
+
+export function getNextSelectedStorageId(
+  visibleItemsBeforeRemoval: Item[],
+  removedItemId: string,
+): string | null {
+  const idx = visibleItemsBeforeRemoval.findIndex((it) => it.id === removedItemId);
+  if (idx === -1) {
+    return visibleItemsBeforeRemoval[0]?.id ?? null;
+  }
+  return visibleItemsBeforeRemoval[idx + 1]?.id ?? visibleItemsBeforeRemoval[idx - 1]?.id ?? null;
 }

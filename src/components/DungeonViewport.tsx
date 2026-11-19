@@ -25,6 +25,7 @@ import {
   createEnemy,
   evalSmoothSeg,
   generateMaze,
+  generateSanctumChamber,
   getBiome,
   pickEncounterAheadCell,
   pickExplorationTarget,
@@ -32,6 +33,14 @@ import {
   shouldTriggerRandomEncounter,
   type SmoothSegment,
 } from '../game/maze';
+import {
+  getUnlockedSanctumTarget,
+  isHeldAtGate,
+  isSanctumFloor,
+  resolveBossVictoryProgression,
+  resolveDefeatRetreatStage,
+  rollSanctumDropRarity,
+} from '../game/sanctum';
 import type {
   CrawlSizeMode,
   Enemy,
@@ -52,6 +61,10 @@ interface DungeonViewportProps {
   engineApiRef: React.MutableRefObject<DungeonEngineApi | null>;
   hudSnapshot: {
     stage: number;
+    maxStage: number;
+    clearedSanctumMax: number;
+    sanctumKeys: number;
+    autoProgress: boolean;
     kills: number;
     maxDmg: number;
     cleared100: boolean;
@@ -81,6 +94,8 @@ interface DungeonViewportProps {
   onTriggerMilestone100: () => void;
   onOfflineElapsed: (elapsedSec: number) => void;
   onRequestSave: () => void;
+  onEnterSanctum: (targetSanctum: number) => void;
+  onRetreatSanctum: () => void;
   throttleCanvas?: boolean;
   fairyOverlay?: ReactNode;
 }
@@ -100,6 +115,8 @@ export function DungeonViewport({
   onTriggerMilestone100,
   onOfflineElapsed,
   onRequestSave,
+  onEnterSanctum,
+  onRetreatSanctum,
   throttleCanvas = false,
   fairyOverlay,
 }: DungeonViewportProps) {
@@ -432,9 +449,54 @@ export function DungeonViewport({
       sim.floorStage = st.stage;
       sim.events = [];
       sim.needNewFloor = false;
-      sim.bossSpawned = false;
       sim.stepsSinceLastEncounter = 0;
       st.floorEncounters = 0;
+
+      const palIdx = Math.floor((st.stage - 1) / 100) % FLOOR_PALETTES.length;
+      sim.palette = FLOOR_PALETTES[palIdx];
+
+      if (isSanctumFloor(st.stage)) {
+        const chamber = generateSanctumChamber(CRAWL_COLS, CRAWL_ROWS);
+        sim.grid = chamber.grid;
+        sim.stairs = chamber.stairs;
+        sim.depth = chamber.depth;
+        sim.explored = chamber.explored;
+        sim.stepped = new Set([crawlKey(chamber.spawn.x, chamber.spawn.y)]);
+
+        const h = sim.hero;
+        h.cx = chamber.spawn.x;
+        h.cy = chamber.spawn.y;
+        h.x = h.cx + 0.5;
+        h.y = h.cy + 0.5;
+        h.angle = -Math.PI / 2;
+
+        sim.dying = null;
+        sim.bossSpawned = true;
+        sim.enemy = createEnemy(st.stage, true);
+        sim.enemyCell = { ...chamber.bossCell };
+        sim.exploreTarget = { ...chamber.bossCell };
+        sim.path = null;
+        sim.segs = null;
+        sim.segIdx = 0;
+        sim.segS = 0;
+        sim.phase = 'face';
+
+        startFight();
+        showBattleBanner(`🏛️ ${st.stage}F 玄室突入！大ボス戦！`);
+        callbacksRef.current.onSyncHud({
+          floorEncounters: 0,
+          stepsToStairs: 2,
+          stairsFound: true,
+          explorePct: 100,
+          bossActive: true,
+          moveStyle: sim.moveStyle,
+          speed: sim.speed,
+          sizeMode: CRAWL_SIZES[sim.sizeIdx].mode,
+        });
+        return;
+      }
+
+      sim.bossSpawned = false;
 
       const { grid, stairs, depth } = generateMaze(CRAWL_COLS, CRAWL_ROWS);
       sim.grid = grid;
@@ -467,9 +529,6 @@ export function DungeonViewport({
           break;
         }
       }
-
-      const palIdx = Math.floor((st.stage - 1) / 100) % FLOOR_PALETTES.length;
-      sim.palette = FLOOR_PALETTES[palIdx];
 
       crawlReveal();
       sim.events = placeMazeEvents(sim.depth, sim.stairs);
@@ -896,11 +955,13 @@ export function DungeonViewport({
         ? 5.0
         : enemy.isGreatDemon
           ? 8.0
-          : enemy.isMidBoss
-            ? 2.5
-            : isBoss
-              ? 2.0
-              : 1.0;
+          : enemy.isSanctumBoss
+            ? 6.0
+            : enemy.isMidBoss
+              ? 2.5
+              : isBoss
+                ? 2.0
+                : 1.0;
       const stoneGain = Math.max(
         1,
         Math.round(((1.4 + st.stage * 0.58) * stoneScale + rand(0, 1.5)) * stoneBuffMult),
@@ -920,27 +981,57 @@ export function DungeonViewport({
         });
         callbacksRef.current.onItemDrop(rareItem, false);
         if (rareItem.rarity >= 3) showPromoteLootBanner(rareItem);
-      } else if (enemy.isGreatDemon) {
-        st.chests += 5;
-        st.mythicChests += 1;
-        callbacksRef.current.onAddLog(`😈 覇王撃破！ 📦宝箱+5 & 🌈虹の宝箱+1`, '#f472b6');
-        triggerFrameFlash(4);
-        playSfx('mythic', st.soundOn);
+      } else if (enemy.isSanctumBoss) {
+        if (enemy.isGreatDemon) {
+          st.chests += 5;
+          st.mythicChests += 1;
+          callbacksRef.current.onAddLog(`😈 ${st.stage}F覇王撃破！ 📦宝箱+5 & 🌈虹の宝箱+1`, '#f472b6');
+          triggerFrameFlash(4);
+          playSfx('mythic', st.soundOn);
+        } else {
+          st.chests += 3;
+          callbacksRef.current.onAddLog(`🏛️ ${st.stage}F玄室大ボス撃破！ 高品質装備×2 & 📦宝箱+3`, '#fbbf24');
+          triggerFrameFlash(3);
+          playSfx('legend', st.soundOn);
+        }
+
+        // 玄室の大ボスは高品質装備を2個確定ドロップ
+        let bestDrop: Item | null = null;
+        for (let dIdx = 0; dIdx < 2; dIdx++) {
+          const rar = rollSanctumDropRarity(st.cleared100, enemy.isGreatDemon);
+          const dropped = generateItem({
+            stage: st.stage,
+            forcedRarity: rar,
+            isBoss: true,
+            cleared100: st.cleared100,
+          });
+          callbacksRef.current.onItemDrop(dropped, false);
+          if (!bestDrop || dropped.rarity > bestDrop.rarity) {
+            bestDrop = dropped;
+          }
+        }
+
         if (st.stage >= 100 && !st.cleared100) {
           st.cleared100 = true;
           showLootBanner('👑 100階「大魔王」討伐！裏世界＆虹装備解禁！', '#f472b6', true);
           callbacksRef.current.onTriggerMilestone100();
+        } else if (enemy.isGreatDemon) {
+          showLootBanner(`🌈 ${st.stage}F大魔王撃破！高品質装備×2＆虹箱×1 獲得！`, '#f472b6', true);
+        } else if (bestDrop && bestDrop.rarity >= 3 && bestDrop.rarity > st.autoSalvageRarity) {
+          showPromoteLootBanner(bestDrop);
         } else {
-          showLootBanner(`🌈 ${st.stage}F大魔王撃破！虹の宝箱×1 獲得！`, '#f472b6', true);
+          showLootBanner(`🏛️ ${st.stage}F玄室踏破！高品質装備×2＆宝箱×3 獲得！`, '#fbbf24', false);
         }
       } else if (enemy.isMidBoss) {
+        st.sanctumKeys += 1;
         st.chests += 2;
-        callbacksRef.current.onAddLog('守護者撃破！ 📦封印の宝箱+2', '#c084fc');
+        spawnFloatText(50, 18, '🗝️ 玄室の鍵 +1!', 'float-loot');
+        callbacksRef.current.onAddLog('守護者撃破！ 🗝️玄室の鍵+1 & 📦封印の宝箱+2', '#c084fc');
       } else if (isBoss) {
         st.chests += 1;
       }
 
-      if (!enemy.isRareEscape) {
+      if (!enemy.isRareEscape && !enemy.isSanctumBoss) {
         const dropChance = isBoss ? 0.78 : 0.28;
         if (Math.random() < dropChance) {
           const dropped = generateItem({ stage: st.stage, isBoss, cleared100: st.cleared100 });
@@ -973,17 +1064,27 @@ export function DungeonViewport({
       sim.phase = 'decide';
 
       if (isBoss) {
-        if (!enemy.isGreatDemon) {
-          callbacksRef.current.onAddLog(`ステージ${st.stage} ボス撃破！ (📦+1)`, '#fbbf24');
-        }
-        if (st.stage >= st.maxStage) {
-          st.maxStage = st.stage + 1;
-        }
-        if (st.autoProgress) {
-          st.stage += 1;
-        }
+        const prevStage = st.stage;
+        const prog = resolveBossVictoryProgression(st);
+        st.clearedSanctumMax = prog.nextClearedSanctumMax;
+        st.maxStage = prog.nextMaxStage;
+        st.stage = prog.nextStage;
         st.floorEncounters = 0;
         sim.needNewFloor = true;
+
+        if (prog.sanctumCleared) {
+          callbacksRef.current.onAddLog(
+            `🏛️ ${prog.sanctumCleared}F玄室制覇！${st.stage}Fへ進出！`,
+            '#4ade80',
+          );
+        } else if (prog.heldAtGate) {
+          callbacksRef.current.onAddLog(
+            `⛩️ ${prevStage}F突破！${prevStage + 1}F玄室が開放（大ボス討伐まで${prevStage}Fを周回待機）`,
+            '#fbbf24',
+          );
+        } else if (!enemy.isMidBoss) {
+          callbacksRef.current.onAddLog(`ステージ${prevStage} ボス撃破！ (📦+1)`, '#fbbf24');
+        }
       }
 
       const reduceSec = FAIRY_KILL_REDUCE_SEC + (isBoss ? FAIRY_FLOOR_REDUCE_SEC : 0);
@@ -1145,8 +1246,17 @@ export function DungeonViewport({
             sim.heroHp = 0;
             sim.battleMode = 'RECOVERING';
             sim.recoverTimer = 1.1;
-            if (st.stage > 1) {
-              st.stage -= 1;
+            const wasSanctum = isSanctumFloor(st.stage);
+            const failedStage = st.stage;
+            const retreatStage = resolveDefeatRetreatStage(st.stage);
+            st.stage = retreatStage;
+            if (wasSanctum) {
+              showBattleBanner(`💀 ${failedStage}F玄室で敗退… ${retreatStage}Fへ撤退`);
+              callbacksRef.current.onAddLog(
+                `💀 ${failedStage}F玄室の大ボスに敗北！${retreatStage}Fで装備を整えよう`,
+                '#f87171',
+              );
+            } else if (retreatStage < failedStage) {
               showBattleBanner(`撤退！ステージ${st.stage}で態勢を立て直す`);
               callbacksRef.current.onAddLog(`敗北によりステージ${st.stage}へ撤退しました`, '#f87171');
             } else {
@@ -1448,14 +1558,16 @@ export function DungeonViewport({
           ? 'rgba(250, 204, 21, 0.95)'
           : sim.enemy.isGreatDemon
             ? 'rgba(244, 114, 182, 0.95)'
-            : sim.enemy.isMidBoss
-              ? 'rgba(192, 132, 252, 0.8)'
-              : null;
+            : sim.enemy.isSanctumBoss
+              ? 'rgba(192, 132, 252, 0.95)'
+              : sim.enemy.isMidBoss
+                ? 'rgba(192, 132, 252, 0.8)'
+                : null;
         sprites.push({
           wx: sim.enemyCell.x + 0.5,
           wy: sim.enemyCell.y + 0.5,
           icon: sim.enemy.icon,
-          scale: sim.enemy.isGreatDemon ? 1.45 : sim.enemy.isBoss ? 1.25 : 0.95,
+          scale: sim.enemy.isSanctumBoss ? 1.45 : sim.enemy.isBoss ? 1.25 : 0.95,
           alpha: 1,
           shake,
           glow,
@@ -1486,7 +1598,9 @@ export function DungeonViewport({
           ? '#eab308'
           : sim.enemy.isGreatDemon
             ? '#ec4899'
-            : '#dc2626';
+            : sim.enemy.isSanctumBoss
+              ? '#a855f7'
+              : '#dc2626';
         ctx.fillRect(bx, by, bw * Math.max(0, sim.enemy.hp / sim.enemy.maxHp), 8);
         ctx.fillStyle = sim.enemy.isRareEscape ? '#fde047' : '#fff';
         ctx.font = 'bold 13px sans-serif';
@@ -1629,6 +1743,13 @@ export function DungeonViewport({
   const biome = getBiome(hudSnapshot.stage);
   const palIdx = Math.floor((hudSnapshot.stage - 1) / 100) % FLOOR_PALETTES.length;
   const biomeLabel = biome.name + (hudSnapshot.stage >= 101 ? ` [${FLOOR_PALETTES[palIdx].name}]` : '');
+  const inSanctum = isSanctumFloor(hudSnapshot.stage);
+  const heldAtGate = isHeldAtGate(hudSnapshot.stage, hudSnapshot.clearedSanctumMax);
+  const sanctumTarget = getUnlockedSanctumTarget(
+    hudSnapshot.stage,
+    hudSnapshot.maxStage,
+    hudSnapshot.clearedSanctumMax,
+  );
 
   return (
     <div id="crawler-area" ref={areaRef} className="relative min-h-0 flex-1 overflow-hidden bg-black">
@@ -1658,29 +1779,48 @@ export function DungeonViewport({
           className="absolute inset-x-0 top-0 z-10 flex flex-wrap items-center justify-between gap-2 bg-gradient-to-b from-[#090d16]/90 to-[#090d16]/25 px-3 py-1.5"
         >
           <div className="flex flex-wrap items-center gap-2 text-xs font-bold drop-shadow">
-            <span>{biomeLabel}</span>
-            <span className="text-sky-400">St.{hudSnapshot.stage}</span>
+            <span>{inSanctum ? `🏛️ ${hudSnapshot.stage}F 玄室` : biomeLabel}</span>
+            <span className={inSanctum ? 'text-purple-300' : 'text-sky-400'}>
+              St.{hudSnapshot.stage}
+            </span>
             <span
               data-testid="floor-explore-status"
               className="flex items-center gap-1.5 text-[11px] font-semibold text-slate-300"
             >
-              <span>遭遇 {hudSnapshot.floorEncounters}体</span>
-              <span aria-hidden="true">·</span>
-              <span
-                className={
-                  hudSnapshot.bossActive
-                    ? 'font-bold text-red-400'
-                    : hudSnapshot.stairsFound
-                      ? 'text-amber-300'
-                      : 'text-sky-300'
-                }
-              >
-                {hudSnapshot.bossActive
-                  ? '階段ボス戦'
-                  : hudSnapshot.stairsFound
-                    ? `階段まで ${hudSnapshot.stepsToStairs}歩`
-                    : `探索 ${hudSnapshot.explorePct}%`}
-              </span>
+              {inSanctum ? (
+                <span className="font-bold text-purple-300">大ボス決戦（雑魚・迷宮なし）</span>
+              ) : (
+                <>
+                  <span>遭遇 {hudSnapshot.floorEncounters}体</span>
+                  <span aria-hidden="true">·</span>
+                  <span
+                    className={
+                      hudSnapshot.bossActive
+                        ? 'font-bold text-red-400'
+                        : hudSnapshot.stairsFound
+                          ? 'text-amber-300'
+                          : 'text-sky-300'
+                    }
+                  >
+                    {hudSnapshot.bossActive
+                      ? '階段ボス戦'
+                      : hudSnapshot.stairsFound
+                        ? `階段まで ${hudSnapshot.stepsToStairs}歩`
+                        : `探索 ${hudSnapshot.explorePct}%`}
+                  </span>
+                  {heldAtGate && (
+                    <>
+                      <span aria-hidden="true">·</span>
+                      <span
+                        data-testid="gate-stall-badge"
+                        className="rounded border border-amber-400/50 bg-amber-500/20 px-1.5 py-0.2 text-[10px] font-bold text-amber-200"
+                      >
+                        ⛩️ {hudSnapshot.autoProgress ? '関門周回中' : '関門階'}
+                      </span>
+                    </>
+                  )}
+                </>
+              )}
             </span>
           </div>
 
@@ -1692,6 +1832,48 @@ export function DungeonViewport({
             <span data-testid="kill-counter">討伐: {fmt(hudSnapshot.kills)}</span>
           </div>
         </div>
+
+        {/* Player-Only Sanctum Entry / Retreat Button */}
+        {inSanctum ? (
+          <div className="absolute bottom-[60px] left-3 z-20 flex flex-col items-start gap-1">
+            <button
+              type="button"
+              data-testid="btn-retreat-sanctum"
+              onClick={onRetreatSanctum}
+              className="rounded-md border border-rose-400/60 bg-slate-900/90 px-2.5 py-1 text-[11px] font-bold text-rose-200 shadow-lg transition hover:bg-rose-950/80"
+            >
+              🚪 玄室から撤退 ({hudSnapshot.stage - 1}Fへ)
+            </button>
+          </div>
+        ) : sanctumTarget !== null ? (
+          <div className="absolute bottom-[60px] left-3 z-20 flex flex-col items-start gap-1">
+            <button
+              type="button"
+              data-testid="btn-enter-sanctum"
+              disabled={hudSnapshot.sanctumKeys < 1}
+              onClick={() => onEnterSanctum(sanctumTarget)}
+              title={
+                hudSnapshot.sanctumKeys >= 1
+                  ? `${sanctumTarget}Fの玄室へ入場します（🗝️玄室の鍵を1本消費・即大ボス戦）`
+                  : '玄室の鍵が不足しています（10層ごとの中ボス撃破で入手）'
+              }
+              className={`rounded-md border px-2.5 py-1 text-[11px] font-extrabold shadow-lg transition ${
+                hudSnapshot.sanctumKeys >= 1
+                  ? 'border-purple-300 bg-gradient-to-r from-purple-700/95 to-fuchsia-700/95 text-white shadow-[0_0_16px_rgba(192,132,252,0.45)] hover:brightness-110'
+                  : 'cursor-not-allowed border-slate-500/40 bg-slate-900/85 text-slate-400'
+              }`}
+            >
+              {hudSnapshot.sanctumKeys >= 1
+                ? `🏛️ ${sanctumTarget}F 玄室へ挑む (🗝️×1)`
+                : `🔒 ${sanctumTarget}F 玄室 (鍵不足)`}
+            </button>
+            {hudSnapshot.sanctumKeys < 1 && (
+              <span className="rounded bg-slate-950/80 px-1.5 py-0.5 text-[10px] text-amber-200/90">
+                10層毎の中ボス再戦で🗝️鍵を入手
+              </span>
+            )}
+          </div>
+        ) : null}
 
         {/* Non-blocking loot banner */}
         <div

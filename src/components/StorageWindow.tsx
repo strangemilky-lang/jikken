@@ -1,6 +1,6 @@
 import { useState, type DragEvent } from 'react';
 import { MAX_BAG_SIZE, MAX_STASH_SIZE, RARITIES, SLOT_ORDER, SLOTS, SUB_MAP } from '../game/constants';
-import { fmt, formatStatDiff, getMainStatVal } from '../game/items';
+import { filterAndSortStorageItems, fmt, formatStatDiff, getMainStatVal } from '../game/items';
 import type {
   DragItemPayload,
   EquippedSet,
@@ -102,16 +102,9 @@ export function StorageWindow({
   const isOtherFull = otherCount >= otherMax;
   const canAcceptDrop = Boolean(draggedItem && draggedItem.source !== location && items.length < maxCapacity);
 
-  let filteredItems = items.filter((it) => filterSlot === 'all' || it.slot === filterSlot);
-  if (sortMode === 'rarity') {
-    filteredItems = [...filteredItems].sort((a, b) => b.rarity - a.rarity || b.stage - a.stage);
-  } else if (sortMode === 'stage') {
-    filteredItems = [...filteredItems].sort((a, b) => b.stage - a.stage || b.rarity - a.rarity);
-  } else if (sortMode === 'level') {
-    filteredItems = [...filteredItems].sort((a, b) => b.level - a.level || b.rarity - a.rarity);
-  }
+  const filteredItems = filterAndSortStorageItems(items, filterSlot, sortMode);
 
-  const selectedItem = items.find((i) => i.id === selectedItemId) ?? null;
+  const selectedItem = filteredItems.find((i) => i.id === selectedItemId) ?? null;
   const showingMobileDetail = mobileShowDetail && selectedItem !== null;
 
   const handleDragOver = (e: DragEvent<HTMLDivElement>) => {
@@ -486,9 +479,11 @@ export function StorageWindow({
             lastBoostedSubIdx={lastBoostedSubIdx}
             upgradeFeedback={upgradeFeedback}
             emptyMessage={
-              isBag
-                ? 'バッグから装備を選択すると、現在の装備との比較・強化・倉庫への移動ができます。'
-                : '倉庫から装備を選択すると、現在の装備との比較や強化ができます。'
+              filteredItems.length === 0 && filterSlot !== 'all'
+                ? `「${SLOTS[filterSlot].label}」タブに該当する装備はありません。`
+                : isBag
+                  ? 'バッグから装備を選択すると、現在の装備との比較・強化・倉庫への移動ができます。'
+                  : '倉庫から装備を選択すると、現在の装備との比較や強化ができます。'
             }
             onEquipItem={onEquipItem}
             onMoveLocation={onMoveItem}

@@ -83,6 +83,8 @@ export interface GameState {
   kills: number;
   chests: number;
   mythicChests: number;
+  sanctumKeys: number;
+  clearedSanctumMax: number;
   cleared100: boolean;
   maxDmg: number;
   soundOn: boolean;
@@ -112,6 +114,7 @@ export interface Enemy {
   icon: string;
   isBoss: boolean;
   isMidBoss: boolean;
+  isSanctumBoss: boolean;
   isGreatDemon: boolean;
   isRareEscape: boolean;
   maxHp: number;

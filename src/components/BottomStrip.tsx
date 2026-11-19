@@ -1,6 +1,7 @@
 import { useState, type DragEvent } from 'react';
 import { MAX_BAG_SIZE, MAX_STASH_SIZE, RARITIES, SLOT_ORDER, SLOTS } from '../game/constants';
 import { calcHeroStats, fmt, getMainStatVal } from '../game/items';
+import { getNextManualStage, getPrevManualStage, isSanctumFloor } from '../game/sanctum';
 import type { DragItemPayload, GameState, SlotKey } from '../game/types';
 import { RarityName } from './RarityName';
 
@@ -43,6 +44,9 @@ export function BottomStrip({
   const stats = calcHeroStats(state.equipped, state.cleared100);
   const totalChests = state.chests + state.mythicChests;
   const featuredSlot = SLOTS[SLOT_ORDER[(state.stage - 1) % SLOT_ORDER.length]];
+  const prevManualStage = getPrevManualStage(state.stage);
+  const nextManualStage = getNextManualStage(state.stage, state.maxStage, state.clearedSanctumMax);
+  const inSanctum = isSanctumFloor(state.stage);
 
   return (
     <footer
@@ -56,21 +60,32 @@ export function BottomStrip({
             <button
               type="button"
               aria-label="前のステージ"
-              disabled={state.stage <= 1}
+              disabled={prevManualStage === null}
               onClick={onPrevStage}
               className="rounded-md border border-slate-400/25 bg-slate-800 px-2.5 py-1 text-xs font-semibold text-slate-100 transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-40"
             >
               ◀
             </button>
             <div className="min-w-[92px] rounded border border-slate-400/20 bg-black/30 px-2 py-0.5 text-center text-xs font-bold">
-              St.{state.stage} / {state.maxStage} {featuredSlot.icon}
-              {featuredSlot.label}UP
+              {inSanctum ? (
+                <span className="text-purple-300">St.{state.stage} 🏛️玄室</span>
+              ) : (
+                <>
+                  St.{state.stage} / {state.maxStage} {featuredSlot.icon}
+                  {featuredSlot.label}UP
+                </>
+              )}
             </div>
             <button
               type="button"
               aria-label="次のステージ"
-              disabled={state.stage >= state.maxStage}
+              disabled={nextManualStage === null}
               onClick={onNextStage}
+              title={
+                nextManualStage === null && isSanctumFloor(state.stage + 1)
+                  ? '50層ごとの玄室は「玄室へ挑む」ボタンから鍵を消費して入場します'
+                  : undefined
+              }
               className="rounded-md border border-slate-400/25 bg-slate-800 px-2.5 py-1 text-xs font-semibold text-slate-100 transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-40"
             >
               ▶
@@ -78,7 +93,7 @@ export function BottomStrip({
             <button
               type="button"
               onClick={onToggleAutoProgress}
-              title="ボス撃破時に自動で次のステージへ進みます"
+              title="ボス撃破時に自動で次のステージへ進みます（50層毎の玄室前では関門階で足止め周回）"
               className={`rounded-md border px-2.5 py-1 text-xs font-semibold transition ${
                 state.autoProgress
                   ? 'border-green-400 bg-green-600/25 text-green-400'
@@ -89,12 +104,26 @@ export function BottomStrip({
             </button>
           </div>
 
-          <div
-            title="強化石（装備の強化に使用）"
-            className="flex shrink-0 items-center gap-1 rounded-md border border-sky-400/35 bg-sky-400/10 px-2.5 py-0.5 text-xs font-bold text-sky-200"
-          >
-            <span>💎</span>
-            <span data-testid="stone-count">{fmt(state.stones)}</span>
+          <div className="flex shrink-0 items-center gap-1.5">
+            <div
+              title="玄室の鍵（10層ごとの中ボス撃破で獲得。50層ごとの玄室入場ごとに1本消費）"
+              className={`flex shrink-0 items-center gap-1 rounded-md border px-2 py-0.5 text-xs font-bold ${
+                state.sanctumKeys > 0
+                  ? 'border-purple-400/50 bg-purple-500/15 text-purple-200'
+                  : 'border-slate-400/25 bg-slate-800/70 text-slate-400'
+              }`}
+            >
+              <span>🗝️</span>
+              <span data-testid="sanctum-key-count">{state.sanctumKeys}</span>
+            </div>
+
+            <div
+              title="強化石（装備の強化に使用）"
+              className="flex shrink-0 items-center gap-1 rounded-md border border-sky-400/35 bg-sky-400/10 px-2.5 py-0.5 text-xs font-bold text-sky-200"
+            >
+              <span>💎</span>
+              <span data-testid="stone-count">{fmt(state.stones)}</span>
+            </div>
           </div>
         </div>
 

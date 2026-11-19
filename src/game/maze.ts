@@ -1,5 +1,6 @@
 import { BIOMES, CRAWL_COLS, CRAWL_ROWS } from './constants';
 import { clamp, randInt } from './items';
+import { isMidBossFloor, isSanctumFloor } from './sanctum';
 import type { Enemy, MazeCell, MazeEvent } from './types';
 
 export const crawlKey = (x: number, y: number) => `${x},${y}`;
@@ -11,8 +12,9 @@ export function getBiome(stage: number) {
 
 export function createEnemy(stage: number, isBoss: boolean, rareSlimeBonusPct = 0): Enemy {
   const biome = getBiome(stage);
-  const isGreatDemon = isBoss && (stage % 100 === 0);
-  const isMidBoss = isBoss && !isGreatDemon && (stage % 10 === 0);
+  const isSanctumBoss = isBoss && isSanctumFloor(stage);
+  const isGreatDemon = isBoss && stage % 100 === 0;
+  const isMidBoss = isBoss && !isSanctumBoss && isMidBossFloor(stage);
   const isRareEscape = !isBoss && Math.random() < (0.12 + Math.max(0, rareSlimeBonusPct) / 100);
 
   const mult = Math.pow(1.145, stage - 1);
@@ -24,6 +26,7 @@ export function createEnemy(stage: number, isBoss: boolean, rareSlimeBonusPct = 
       icon: '✨',
       isBoss: false,
       isMidBoss: false,
+      isSanctumBoss: false,
       isGreatDemon: false,
       isRareEscape: true,
       maxHp: Math.round(75 * mult),
@@ -34,21 +37,26 @@ export function createEnemy(stage: number, isBoss: boolean, rareSlimeBonusPct = 
     };
   }
 
-  if (isGreatDemon) {
-    const name = stage === 100 ? '【大魔王】深淵の大魔王' : `【覇王 ${stage}F】創世の魔王`;
-    const maxHp = Math.round(220 * mult);
+  if (isSanctumBoss) {
+    const name = isGreatDemon
+      ? stage === 100
+        ? '【大魔王】深淵の大魔王'
+        : `【覇王 ${stage}F】創世の魔王`
+      : `【玄室の大ボス ${stage}F】${biome.boss.name}`;
+    const maxHp = Math.round(420 * mult);
     return {
       name,
-      icon: '😈',
+      icon: isGreatDemon ? '😈' : biome.boss.icon,
       isBoss: true,
       isMidBoss: false,
-      isGreatDemon: true,
+      isSanctumBoss: true,
+      isGreatDemon,
       isRareEscape: false,
       maxHp,
       hp: maxHp,
-      atk: Math.max(1, Math.round(10.5 * atkMult)),
-      atkInterval: 1.35,
-      defRate: Math.min(0.65, 0.4 + stage * 0.001),
+      atk: Math.max(1, Math.round(18 * atkMult)),
+      atkInterval: 1.2,
+      defRate: Math.min(0.68, 0.44 + stage * 0.001),
     };
   }
 
@@ -67,6 +75,7 @@ export function createEnemy(stage: number, isBoss: boolean, rareSlimeBonusPct = 
     icon: tpl.icon,
     isBoss,
     isMidBoss,
+    isSanctumBoss: false,
     isGreatDemon: false,
     isRareEscape: false,
     maxHp,
@@ -326,6 +335,48 @@ export function generateMaze(cols = CRAWL_COLS, rows = CRAWL_ROWS): {
   }
 
   return { grid, stairs, depth: dist };
+}
+
+/**
+ * 50層ごとの「玄室」（迷宮・雑魚なし、中央大広間で入場即大ボス戦）を生成する
+ */
+export function generateSanctumChamber(cols = CRAWL_COLS, rows = CRAWL_ROWS): {
+  grid: number[][];
+  spawn: MazeCell;
+  bossCell: MazeCell;
+  stairs: MazeCell;
+  depth: Map<string, number>;
+  explored: Set<string>;
+} {
+  const grid = Array.from({ length: rows }, () => Array(cols).fill(1));
+  const cx = Math.floor(cols / 2);
+  const cy = Math.floor(rows / 2);
+  const minX = Math.max(1, cx - 2);
+  const maxX = Math.min(cols - 2, cx + 2);
+  const minY = Math.max(1, cy - 3);
+  const maxY = Math.min(rows - 2, cy + 3);
+
+  const depth = new Map<string, number>();
+  const explored = new Set<string>();
+  const spawn: MazeCell = { x: cx, y: maxY - 1 };
+  const bossCell: MazeCell = { x: cx, y: cy };
+  const stairs: MazeCell = { x: cx, y: minY + 1 };
+
+  for (let y = minY; y <= maxY; y++) {
+    for (let x = minX; x <= maxX; x++) {
+      grid[y][x] = 0;
+      depth.set(crawlKey(x, y), Math.abs(x - spawn.x) + Math.abs(y - spawn.y));
+    }
+  }
+  for (let y = minY - 1; y <= maxY + 1; y++) {
+    for (let x = minX - 1; x <= maxX + 1; x++) {
+      if (x >= 0 && y >= 0 && x < cols && y < rows) {
+        explored.add(crawlKey(x, y));
+      }
+    }
+  }
+
+  return { grid, spawn, bossCell, stairs, depth, explored };
 }
 
 export function bfsGrid(

@@ -21,11 +21,13 @@ import {
   calcHeroStats,
   calcHitDamage,
   commitChestItemToState,
+  filterAndSortStorageItems,
   formatStatDiff,
   formatUpgradeMessage,
   generateItem,
   getEquipTierStage,
   getMainStatVal,
+  getNextSelectedStorageId,
   getSalvageValue,
   getUpgradeCost,
   partitionBulkSalvage,
@@ -36,11 +38,26 @@ import {
   crawlKey,
   createEnemy,
   generateMaze,
+  generateSanctumChamber,
   pickEncounterAheadCell,
   pickExplorationTarget,
   placeMazeEvents,
   shouldTriggerRandomEncounter,
 } from './maze';
+import {
+  canEnterSanctum,
+  enterSanctumState,
+  getNextManualStage,
+  getPrevManualStage,
+  getUnlockedSanctumTarget,
+  isGateFloor,
+  isHeldAtGate,
+  isMidBossFloor,
+  isSanctumFloor,
+  resolveBossVictoryProgression,
+  resolveDefeatRetreatStage,
+  rollSanctumDropRarity,
+} from './sanctum';
 import { createDefaultState, parseSaveState } from './save';
 
 test('CHEST_BATCH_MAX is 9 for 3x3 modal layout', () => {
@@ -438,3 +455,255 @@ test('Fairy evolves every 100F with non-DPS utility passives, explore-accelerate
   assert.equal(parsed.fairy.giftsReady, 0);
   assert.ok(parsed.fairy.cooldownSec > 0);
 });
+
+test('filterAndSortStorageItems and getNextSelectedStorageId keep salvage selection scoped to active tab', () => {
+  const w1 = { ...generateItem({ stage: 5, forcedRarity: 0, forcedSlot: 'weapon' }), id: 'w1' };
+  const w2 = { ...generateItem({ stage: 10, forcedRarity: 2, forcedSlot: 'weapon' }), id: 'w2' };
+  const a1 = { ...generateItem({ stage: 8, forcedRarity: 3, forcedSlot: 'armor' }), id: 'a1' };
+  const r1 = { ...generateItem({ stage: 4, forcedRarity: 1, forcedSlot: 'ring' }), id: 'r1' };
+  const inventory = [w1, a1, w2, r1];
+
+  // Weapon tab sorted by rarity: [w2, w1]
+  const weaponTab = filterAndSortStorageItems(inventory, 'weapon', 'rarity');
+  assert.deepEqual(
+    weaponTab.map((i) => i.id),
+    ['w2', 'w1'],
+  );
+
+  // Salvaging w2 advances to w1 (next weapon in weapon tab), never a1
+  assert.equal(getNextSelectedStorageId(weaponTab, 'w2'), 'w1');
+
+  // Salvaging the last weapon in the weapon tab yields null (never jumps to armor/ring)
+  const weaponTabLast = weaponTab.filter((i) => i.id !== 'w2');
+  assert.equal(getNextSelectedStorageId(weaponTabLast, 'w1'), null);
+
+  // 'all' tab sorted by rarity: [a1 (rarity 3), w2 (rarity 2), r1 (rarity 1), w1 (rarity 0)]
+  const allTab = filterAndSortStorageItems(inventory, 'all', 'rarity');
+  assert.deepEqual(
+    allTab.map((i) => i.id),
+    ['a1', 'w2', 'r1', 'w1'],
+  );
+  assert.equal(getNextSelectedStorageId(allTab, 'a1'), 'w2');
+  assert.equal(getNextSelectedStorageId(allTab, 'w1'), 'r1');
+});
+
+test('Sanctum predicates identify 10F mid-bosses, 50F Sanctums, and 49F/99F gate floors', () => {
+  assert.equal(isMidBossFloor(10), true);
+  assert.equal(isMidBossFloor(40), true);
+  assert.equal(isMidBossFloor(60), true);
+  assert.equal(isMidBossFloor(50), false);
+  assert.equal(isMidBossFloor(100), false);
+
+  assert.equal(isSanctumFloor(50), true);
+  assert.equal(isSanctumFloor(100), true);
+  assert.equal(isSanctumFloor(150), true);
+  assert.equal(isSanctumFloor(49), false);
+
+  assert.equal(isGateFloor(49), true);
+  assert.equal(isGateFloor(99), true);
+  assert.equal(isGateFloor(50), false);
+
+  assert.equal(isHeldAtGate(49, 0), true);
+  assert.equal(isHeldAtGate(49, 50), false);
+  assert.equal(isHeldAtGate(99, 50), true);
+  assert.equal(isHeldAtGate(99, 100), false);
+
+  assert.equal(getUnlockedSanctumTarget(20, 49, 0), null);
+  assert.equal(getUnlockedSanctumTarget(49, 50, 0), 50);
+  assert.equal(getUnlockedSanctumTarget(10, 50, 0), 50);
+  assert.equal(getUnlockedSanctumTarget(65, 65, 50), 50);
+  assert.equal(getUnlockedSanctumTarget(99, 100, 50), 100);
+  assert.equal(getUnlockedSanctumTarget(40, 100, 50), 100);
+});
+
+test('Sanctum progression halts autoProgress at 49F gate until 50F Great Boss is defeated', () => {
+  // Clearing 49F with autoProgress ON holds at 49F while unlocking maxStage 50
+  const gateRes = resolveBossVictoryProgression({
+    stage: 49,
+    maxStage: 49,
+    autoProgress: true,
+    clearedSanctumMax: 0,
+  });
+  assert.equal(gateRes.heldAtGate, true);
+  assert.equal(gateRes.nextStage, 49);
+  assert.equal(gateRes.nextMaxStage, 50);
+  assert.equal(gateRes.nextClearedSanctumMax, 0);
+
+  // Defeating 50F Great Boss exits Sanctum to 51F even if autoProgress is OFF
+  const sanctumClear = resolveBossVictoryProgression({
+    stage: 50,
+    maxStage: 50,
+    autoProgress: false,
+    clearedSanctumMax: 0,
+  });
+  assert.equal(sanctumClear.sanctumCleared, 50);
+  assert.equal(sanctumClear.heldAtGate, false);
+  assert.equal(sanctumClear.nextStage, 51);
+  assert.equal(sanctumClear.nextMaxStage, 51);
+  assert.equal(sanctumClear.nextClearedSanctumMax, 50);
+
+  // Re-clearing 49F after 50F is cleared skips 50F directly to 51F
+  const skipRes = resolveBossVictoryProgression({
+    stage: 49,
+    maxStage: 51,
+    autoProgress: true,
+    clearedSanctumMax: 50,
+  });
+  assert.equal(skipRes.heldAtGate, false);
+  assert.equal(skipRes.nextStage, 51);
+});
+
+test('Manual stage navigation and defeat retreat never enter Sanctums automatically', () => {
+  assert.equal(getNextManualStage(49, 50, 0), null);
+  assert.equal(getNextManualStage(49, 51, 50), 51);
+  assert.equal(getNextManualStage(50, 50, 0), null);
+  assert.equal(getNextManualStage(50, 51, 50), 51);
+
+  assert.equal(getPrevManualStage(51), 49);
+  assert.equal(getPrevManualStage(50), 49);
+  assert.equal(getPrevManualStage(1), null);
+
+  assert.equal(resolveDefeatRetreatStage(50), 49);
+  assert.equal(resolveDefeatRetreatStage(51), 49);
+  assert.equal(resolveDefeatRetreatStage(49), 48);
+});
+
+test('Sanctum entry requires unlocked gate + key and consumes 1 key per entry', () => {
+  const st = createDefaultState();
+  st.stage = 49;
+  st.maxStage = 49;
+  st.sanctumKeys = 2;
+  assert.deepEqual(canEnterSanctum(st, 50), { ok: false, reason: 'locked' });
+
+  st.maxStage = 50;
+  st.sanctumKeys = 0;
+  assert.deepEqual(canEnterSanctum(st, 50), { ok: false, reason: 'no_key' });
+
+  st.sanctumKeys = 2;
+  st.floorEncounters = 7;
+  assert.equal(enterSanctumState(st, 50), true);
+  assert.equal(st.sanctumKeys, 1);
+  assert.equal(st.stage, 50);
+  assert.equal(st.floorEncounters, 0);
+
+  // Cannot re-enter another Sanctum while already inside a Sanctum
+  assert.deepEqual(canEnterSanctum(st, 50), { ok: false, reason: 'already_in_sanctum' });
+  assert.equal(enterSanctumState(st, 50), false);
+  assert.equal(st.sanctumKeys, 1);
+});
+
+test('Sanctum chamber layout, Great Boss drops, and blind-try difficulty vs upgraded clear', () => {
+  const chamber = generateSanctumChamber();
+  assert.equal(chamber.grid[chamber.spawn.y][chamber.spawn.x], 0);
+  assert.equal(chamber.grid[chamber.bossCell.y][chamber.bossCell.x], 0);
+  assert.equal(chamber.grid[chamber.stairs.y][chamber.stairs.x], 0);
+  assert.ok(chamber.explored.has(crawlKey(chamber.bossCell.x, chamber.bossCell.y)));
+  assert.ok(chamber.explored.has(crawlKey(chamber.stairs.x, chamber.stairs.y)));
+
+  for (let i = 0; i < 40; i++) {
+    const rPre = rollSanctumDropRarity(false, false, () => i / 40);
+    assert.ok(rPre >= 2 && rPre <= 3);
+    const rPost = rollSanctumDropRarity(true, true, () => i / 40);
+    assert.ok(rPost >= 2 && rPost <= 4);
+  }
+  assert.equal(rollSanctumDropRarity(true, false, () => 0.05), 4);
+
+  const boss49 = createEnemy(49, true);
+  const boss50 = createEnemy(50, true);
+  assert.equal(boss50.isSanctumBoss, true);
+  assert.equal(boss50.isMidBoss, false);
+  assert.equal(boss50.isGreatDemon, false);
+  assert.ok(boss50.maxHp > boss49.maxHp * 3);
+  assert.ok(boss50.atk > boss49.atk * 2);
+
+  // Simulate deterministic combat: a hero who clears 49F loses blind on 50F,
+  // while +20 upgraded Legend 49F-tier gear defeats 50F Great Boss
+  const st = createDefaultState();
+  const buildSet = (rarity: 1 | 3, level: number) => {
+    const eq = { ...st.equipped };
+    for (const slot of SLOT_ORDER) {
+      eq[slot] = {
+        ...generateItem({ stage: 49, forcedRarity: rarity, forcedSlot: slot }),
+        level,
+        subStats:
+          rarity === 3
+            ? [
+                { key: 'atkPct', val: 12, boosts: 1 },
+                { key: 'critRate', val: 8, boosts: 1 },
+                { key: 'armorPen', val: 14, boosts: 1 },
+                { key: 'bossDmg', val: 16, boosts: 1 },
+              ]
+            : [
+                { key: 'atkPct', val: 5, boosts: 0 },
+                { key: 'critRate', val: 4, boosts: 0 },
+              ],
+      };
+    }
+    return calcHeroStats(eq, false);
+  };
+  const simulateSecondsToKill = (stats: ReturnType<typeof calcHeroStats>, enemy: ReturnType<typeof createEnemy>) => {
+    const nonCritHit = calcHitDamage(stats, enemy.defRate, true, 0, 1, 1);
+    const critHit = calcHitDamage(stats, enemy.defRate, true, 1, 1, 1);
+    const pCrit = Math.min(1, stats.critRate / 100);
+    const avgHit = nonCritHit * (1 - pCrit) + critHit * pCrit;
+    const heroDps = avgHit * stats.aspd;
+    const enemyDps = enemy.atk / enemy.atkInterval;
+    return {
+      ttk: enemy.maxHp / Math.max(1, heroDps),
+      survive: stats.hp / Math.max(1, enemyDps),
+    };
+  };
+
+  const blindHero = buildSet(1, 5);
+  const blindVs49 = simulateSecondsToKill(blindHero, boss49);
+  const blindVs50 = simulateSecondsToKill(blindHero, boss50);
+  assert.ok(blindVs49.survive > blindVs49.ttk, `Blind 49F hero should beat 49F boss (survive=${blindVs49.survive.toFixed(1)}s, ttk=${blindVs49.ttk.toFixed(1)}s)`);
+  assert.ok(blindVs50.survive < blindVs50.ttk, `Blind 49F hero should lose to 50F Great Boss (survive=${blindVs50.survive.toFixed(1)}s, ttk=${blindVs50.ttk.toFixed(1)}s)`);
+
+  const gearedHero = buildSet(3, 20);
+  const gearedVs50 = simulateSecondsToKill(gearedHero, boss50);
+  assert.ok(gearedVs50.survive > gearedVs50.ttk, `Upgraded 49F Legend+20 hero should beat 50F Great Boss (survive=${gearedVs50.survive.toFixed(1)}s, ttk=${gearedVs50.ttk.toFixed(1)}s)`);
+});
+
+test('parseSaveState persists sanctumKeys/clearedSanctumMax and safely migrates legacy Sanctum saves', () => {
+  const base = createDefaultState();
+  const saved = parseSaveState(
+    JSON.stringify({
+      ...base,
+      stage: 49,
+      maxStage: 50,
+      sanctumKeys: 3,
+      clearedSanctumMax: 0,
+    }),
+  );
+  assert.ok(saved !== null);
+  assert.equal(saved.sanctumKeys, 3);
+  assert.equal(saved.clearedSanctumMax, 0);
+
+  // Legacy save without clearedSanctumMax stuck on 50F retreats safely to 49F
+  const legacyAt50 = parseSaveState(
+    JSON.stringify({
+      stage: 50,
+      maxStage: 50,
+      equipped: base.equipped,
+    }),
+  );
+  assert.ok(legacyAt50 !== null);
+  assert.equal(legacyAt50.stage, 49);
+  assert.equal(legacyAt50.sanctumKeys, 0);
+  assert.equal(legacyAt50.clearedSanctumMax, 0);
+
+  // Legacy save at 125F infers clearedSanctumMax >= 100
+  const legacyAt125 = parseSaveState(
+    JSON.stringify({
+      stage: 125,
+      maxStage: 125,
+      cleared100: true,
+      equipped: base.equipped,
+    }),
+  );
+  assert.ok(legacyAt125 !== null);
+  assert.equal(legacyAt125.clearedSanctumMax, 100);
+});
+
+

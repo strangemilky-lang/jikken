@@ -28,15 +28,23 @@ import {
 } from './game/fairy';
 import {
   commitChestItemToState,
+  filterAndSortStorageItems,
   fmt,
   formatUpgradeMessage,
   generateItem,
+  getNextSelectedStorageId,
   getSalvageValue,
   getUpgradeCost,
   partitionBulkSalvage,
   rollSubstatMilestone,
   uid,
 } from './game/items';
+import {
+  enterSanctumState,
+  getNextManualStage,
+  getPrevManualStage,
+  resolveDefeatRetreatStage,
+} from './game/sanctum';
 import { computeOfflineRewards, createDefaultState, loadSavedGame, persistGame } from './game/save';
 import type {
   CrawlSizeMode,
@@ -467,21 +475,17 @@ export default function App() {
     }
 
     if (win === 'bag') {
-      if (!selectedBagId || !st.inventory.some((i) => i.id === selectedBagId)) {
-        const firstMatch =
-          st.inventory.find((i) => bagFilterSlot === 'all' || i.slot === bagFilterSlot) ??
-          st.inventory[0];
-        setSelectedBagId(firstMatch?.id ?? null);
+      const visible = filterAndSortStorageItems(st.inventory, bagFilterSlot, bagSortMode);
+      if (!selectedBagId || !visible.some((i) => i.id === selectedBagId)) {
+        setSelectedBagId(visible[0]?.id ?? null);
       }
       setBagMobileDetail(false);
     }
 
     if (win === 'stash') {
-      if (!selectedStashId || !st.stash.some((i) => i.id === selectedStashId)) {
-        const firstMatch =
-          st.stash.find((i) => stashFilterSlot === 'all' || i.slot === stashFilterSlot) ??
-          st.stash[0];
-        setSelectedStashId(firstMatch?.id ?? null);
+      const visible = filterAndSortStorageItems(st.stash, stashFilterSlot, stashSortMode);
+      if (!selectedStashId || !visible.some((i) => i.id === selectedStashId)) {
+        setSelectedStashId(visible[0]?.id ?? null);
       }
       setStashMobileDetail(false);
     }
@@ -513,6 +517,7 @@ export default function App() {
 
     const bagIdx = st.inventory.findIndex((i) => i.id === itemId);
     if (bagIdx !== -1) {
+      const visibleBefore = filterAndSortStorageItems(st.inventory, bagFilterSlot, bagSortMode);
       const nextItem = st.inventory[bagIdx];
       const prevItem = st.equipped[nextItem.slot];
       st.inventory.splice(bagIdx, 1);
@@ -520,7 +525,11 @@ export default function App() {
       st.equipped[nextItem.slot] = nextItem;
 
       setSelectedEquippedSlot(nextItem.slot);
-      setSelectedBagId(prevItem?.id ?? st.inventory[0]?.id ?? null);
+      const prevVisible =
+        prevItem && (bagFilterSlot === 'all' || bagFilterSlot === prevItem.slot);
+      setSelectedBagId(
+        prevVisible ? prevItem.id : getNextSelectedStorageId(visibleBefore, itemId),
+      );
       setBagMobileDetail(false);
       setUpgradeFeedback('');
       setLastBoostedSubIdx(null);
@@ -533,6 +542,7 @@ export default function App() {
 
     const stashIdx = st.stash.findIndex((i) => i.id === itemId);
     if (stashIdx !== -1) {
+      const visibleBefore = filterAndSortStorageItems(st.stash, stashFilterSlot, stashSortMode);
       const nextItem = st.stash[stashIdx];
       const prevItem = st.equipped[nextItem.slot];
       st.stash.splice(stashIdx, 1);
@@ -540,7 +550,11 @@ export default function App() {
       st.equipped[nextItem.slot] = nextItem;
 
       setSelectedEquippedSlot(nextItem.slot);
-      setSelectedStashId(prevItem?.id ?? st.stash[0]?.id ?? null);
+      const prevVisible =
+        prevItem && (stashFilterSlot === 'all' || stashFilterSlot === prevItem.slot);
+      setSelectedStashId(
+        prevVisible ? prevItem.id : getNextSelectedStorageId(visibleBefore, itemId),
+      );
       setStashMobileDetail(false);
       setUpgradeFeedback('');
       setLastBoostedSubIdx(null);
@@ -561,13 +575,16 @@ export default function App() {
       }
       const idx = st.inventory.findIndex((i) => i.id === itemId);
       if (idx === -1) return;
+      const visibleBefore = filterAndSortStorageItems(st.inventory, bagFilterSlot, bagSortMode);
       const [moved] = st.inventory.splice(idx, 1);
       st.stash.unshift(moved);
       if (selectedBagId === itemId) {
-        setSelectedBagId(st.inventory[idx]?.id ?? st.inventory[0]?.id ?? null);
+        setSelectedBagId(getNextSelectedStorageId(visibleBefore, itemId));
         setBagMobileDetail(false);
       }
-      setSelectedStashId(moved.id);
+      if (stashFilterSlot === 'all' || stashFilterSlot === moved.slot) {
+        setSelectedStashId(moved.id);
+      }
       setUpgradeFeedback(`📦 ${moved.name} を倉庫へ預けました`);
       playSfx('drop', st.soundOn);
       persistGame(st);
@@ -579,13 +596,16 @@ export default function App() {
       }
       const idx = st.stash.findIndex((i) => i.id === itemId);
       if (idx === -1) return;
+      const visibleBefore = filterAndSortStorageItems(st.stash, stashFilterSlot, stashSortMode);
       const [moved] = st.stash.splice(idx, 1);
       st.inventory.unshift(moved);
       if (selectedStashId === itemId) {
-        setSelectedStashId(st.stash[idx]?.id ?? st.stash[0]?.id ?? null);
+        setSelectedStashId(getNextSelectedStorageId(visibleBefore, itemId));
         setStashMobileDetail(false);
       }
-      setSelectedBagId(moved.id);
+      if (bagFilterSlot === 'all' || bagFilterSlot === moved.slot) {
+        setSelectedBagId(moved.id);
+      }
       setUpgradeFeedback(`🎒 ${moved.name} をバッグへ戻しました`);
       playSfx('drop', st.soundOn);
       persistGame(st);
@@ -701,11 +721,12 @@ export default function App() {
     if (bagIdx !== -1) {
       const item = st.inventory[bagIdx];
       if (item.locked) return;
+      const visibleBefore = filterAndSortStorageItems(st.inventory, bagFilterSlot, bagSortMode);
       const gain = getSalvageValue(item, fairyProfile.salvageBonusPct);
       st.inventory.splice(bagIdx, 1);
       st.stones += gain;
       if (selectedBagId === itemId) {
-        setSelectedBagId(st.inventory[bagIdx]?.id ?? st.inventory[0]?.id ?? null);
+        setSelectedBagId(getNextSelectedStorageId(visibleBefore, itemId));
         setBagMobileDetail(false);
       }
       addLog(`分解: ${item.name} → +${gain}💎`);
@@ -719,11 +740,12 @@ export default function App() {
     if (stashIdx !== -1) {
       const item = st.stash[stashIdx];
       if (item.locked) return;
+      const visibleBefore = filterAndSortStorageItems(st.stash, stashFilterSlot, stashSortMode);
       const gain = getSalvageValue(item, fairyProfile.salvageBonusPct);
       st.stash.splice(stashIdx, 1);
       st.stones += gain;
       if (selectedStashId === itemId) {
-        setSelectedStashId(st.stash[stashIdx]?.id ?? st.stash[0]?.id ?? null);
+        setSelectedStashId(getNextSelectedStorageId(visibleBefore, itemId));
         setStashMobileDetail(false);
       }
       addLog(`分解(倉庫): ${item.name} → +${gain}💎`);
@@ -754,8 +776,9 @@ export default function App() {
         (res.protectedCount > 0 ? `（上位品 ${res.protectedCount}個は保護）` : ''),
     );
 
-    if (!st.inventory.some((i) => i.id === selectedBagId)) {
-      setSelectedBagId(st.inventory[0]?.id ?? null);
+    const visibleAfter = filterAndSortStorageItems(st.inventory, bagFilterSlot, bagSortMode);
+    if (!visibleAfter.some((i) => i.id === selectedBagId)) {
+      setSelectedBagId(visibleAfter[0]?.id ?? null);
       setBagMobileDetail(false);
     }
     addLog(`一括分解: ${res.salvagedCount}個 → +${fmt(res.totalGain)}💎`, '#38bdf8');
@@ -956,6 +979,25 @@ export default function App() {
     forceRender();
   };
 
+  const handleEnterSanctum = (targetSanctum: number) => {
+    if (!enterSanctumState(st, targetSanctum)) return;
+    playSfx('chest', st.soundOn);
+    addLog(`🏛️ ${targetSanctum}F 玄室へ入場！（🗝️玄室の鍵 -1）`, '#c084fc');
+    engineApiRef.current?.resetToCurrentStage();
+    persistGame(st);
+    forceRender();
+  };
+
+  const handleRetreatSanctum = () => {
+    const prev = st.stage;
+    st.stage = resolveDefeatRetreatStage(st.stage);
+    st.floorEncounters = 0;
+    addLog(`🚪 ${prev}F玄室から${st.stage}Fへ撤退しました`, '#94a3b8');
+    engineApiRef.current?.resetToCurrentStage();
+    persistGame(st);
+    forceRender();
+  };
+
   return (
     <div className="flex h-full w-full flex-col overflow-hidden bg-[#070b14]">
       <DungeonViewport
@@ -963,6 +1005,10 @@ export default function App() {
         engineApiRef={engineApiRef}
         hudSnapshot={{
           stage: st.stage,
+          maxStage: st.maxStage,
+          clearedSanctumMax: st.clearedSanctumMax,
+          sanctumKeys: st.sanctumKeys,
+          autoProgress: st.autoProgress,
           kills: st.kills,
           maxDmg: st.maxDmg,
           cleared100: st.cleared100,
@@ -982,6 +1028,8 @@ export default function App() {
         onTriggerMilestone100={() => setMilestoneOpen(true)}
         onOfflineElapsed={(sec) => applyOfflineElapsed(sec, false)}
         onRequestSave={() => persistGame(stateRef.current)}
+        onEnterSanctum={handleEnterSanctum}
+        onRetreatSanctum={handleRetreatSanctum}
         throttleCanvas={chestModalOpen || milestoneOpen || offlineSummary !== null || resetConfirmOpen}
         fairyOverlay={
           <FairyWidget
@@ -1001,16 +1049,18 @@ export default function App() {
         openWindows={openWindows}
         draggedItem={draggedItem}
         onPrevStage={() => {
-          if (st.stage <= 1) return;
-          st.stage -= 1;
+          const target = getPrevManualStage(st.stage);
+          if (target === null) return;
+          st.stage = target;
           st.floorEncounters = 0;
           engineApiRef.current?.resetToCurrentStage();
           persistGame(st);
           forceRender();
         }}
         onNextStage={() => {
-          if (st.stage >= st.maxStage) return;
-          st.stage += 1;
+          const target = getNextManualStage(st.stage, st.maxStage, st.clearedSanctumMax);
+          if (target === null) return;
+          st.stage = target;
           st.floorEncounters = 0;
           engineApiRef.current?.resetToCurrentStage();
           persistGame(st);
@@ -1099,7 +1149,14 @@ export default function App() {
         onFocus={() => focusWindow('bag')}
         onMovePosition={(pos) => moveWindowPosition('bag', pos)}
         onResizeWindow={(sz) => resizeWindowSize('bag', sz)}
-        onChangeFilter={(slot) => setBagFilterSlot(slot)}
+        onChangeFilter={(slot) => {
+          setBagFilterSlot(slot);
+          const nextVisible = filterAndSortStorageItems(st.inventory, slot, bagSortMode);
+          if (!nextVisible.some((i) => i.id === selectedBagId)) {
+            setSelectedBagId(nextVisible[0]?.id ?? null);
+          }
+          setBagMobileDetail(false);
+        }}
         onChangeSort={(mode) => setBagSortMode(mode)}
         onSelectItem={(id) => {
           setSelectedBagId(id);
@@ -1146,7 +1203,14 @@ export default function App() {
         onFocus={() => focusWindow('stash')}
         onMovePosition={(pos) => moveWindowPosition('stash', pos)}
         onResizeWindow={(sz) => resizeWindowSize('stash', sz)}
-        onChangeFilter={(slot) => setStashFilterSlot(slot)}
+        onChangeFilter={(slot) => {
+          setStashFilterSlot(slot);
+          const nextVisible = filterAndSortStorageItems(st.stash, slot, stashSortMode);
+          if (!nextVisible.some((i) => i.id === selectedStashId)) {
+            setSelectedStashId(nextVisible[0]?.id ?? null);
+          }
+          setStashMobileDetail(false);
+        }}
         onChangeSort={(mode) => setStashSortMode(mode)}
         onSelectItem={(id) => {
           setSelectedStashId(id);
