@@ -1,0 +1,4226 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ストリップ勇者伝 - 3Dクロウラー放置RPG（完全版）</title>
+<style>
+  :root {
+    --bg-page: #070b14;
+    --bg-strip: #0f172a;
+    --bg-panel: #162033;
+    --bg-card: #1e293b;
+    --bg-card-hover: #263449;
+    --border-color: rgba(148, 163, 184, 0.22);
+    --text-main: #f1f5f9;
+    --text-muted: #94a3b8;
+    --text-dim: #64748b;
+    --green: #4ade80;
+    --red: #f87171;
+    --gold: #fbbf24;
+    --cyan: #38bdf8;
+    --purple: #c084fc;
+    --common: #cbd5e1;
+    --rare: #38bdf8;
+    --epic: #c084fc;
+    --legend: #fbbf24;
+    --mythic: #f472b6;
+    --strip-h: 216px;
+  }
+
+  * {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+  }
+
+  html, body {
+    width: 100%;
+    height: 100%;
+    background: var(--bg-page);
+    color: var(--text-main);
+    font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Yu Gothic", Meiryo, sans-serif;
+    font-size: 13px;
+    overflow: hidden;
+    user-select: none;
+  }
+
+  /* 虹色（ミシック）演出用 */
+  .mythic-text {
+    background: linear-gradient(90deg, #f472b6, #fbbf24, #4ade80, #38bdf8, #c084fc, #f472b6);
+    background-size: 200% auto;
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent !important;
+    animation: rainbowFlow 2.6s linear infinite;
+  }
+  @keyframes rainbowFlow {
+    0% { background-position: 0% center; }
+    100% { background-position: 200% center; }
+  }
+
+  /* 下部横長ストリップ本体 */
+  #strip-shell {
+    position: relative;
+    flex-shrink: 0;
+    margin-top: auto;
+    height: var(--strip-h);
+    background: linear-gradient(180deg, #131d31 0%, #0b1120 100%);
+    border-top: 2px solid rgba(56, 189, 248, 0.35);
+    box-shadow: 0 -8px 30px rgba(0, 0, 0, 0.65);
+    display: flex;
+    align-items: stretch;
+    z-index: 20;
+  }
+
+  /* バトル上部HUD */
+  .battle-hud {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 6;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 12px;
+    background: linear-gradient(180deg, rgba(9, 13, 22, 0.88) 0%, rgba(9, 13, 22, 0.28) 100%);
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  .stage-badge {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-weight: 700;
+    font-size: 13px;
+    text-shadow: 0 1px 3px rgba(0,0,0,0.8);
+    flex-wrap: wrap;
+  }
+
+  .title-chip {
+    font-size: 10px;
+    font-weight: 800;
+    padding: 1px 6px;
+    border-radius: 99px;
+    background: rgba(251, 191, 36, 0.2);
+    border: 1px solid rgba(251, 191, 36, 0.65);
+    color: #fde047;
+  }
+
+  .buff-chip {
+    font-size: 10px;
+    font-weight: 800;
+    padding: 1px 6px;
+    border-radius: 99px;
+    background: rgba(192, 132, 252, 0.25);
+    border: 1px solid rgba(192, 132, 252, 0.7);
+    color: #f3e8ff;
+    animation: pulseUp 1.6s infinite;
+  }
+
+  .wave-pills {
+    display: flex;
+    align-items: center;
+    gap: 3px;
+  }
+  .wave-dot {
+    width: 10px;
+    height: 6px;
+    border-radius: 3px;
+    background: rgba(255, 255, 255, 0.2);
+    transition: all 0.2s;
+  }
+  .wave-dot.done { background: var(--green); }
+  .wave-dot.current { background: var(--cyan); box-shadow: 0 0 6px var(--cyan); width: 14px; }
+  .wave-dot.boss { background: rgba(248, 113, 113, 0.35); }
+  .wave-dot.boss.current { background: var(--red); box-shadow: 0 0 8px var(--red); }
+
+  .hud-right-info {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-left: auto;
+  }
+  .dps-pill {
+    background: rgba(15, 23, 42, 0.85);
+    border: 1px solid rgba(251, 191, 36, 0.4);
+    color: var(--gold);
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-weight: 700;
+    font-size: 12px;
+  }
+  .rec-pill {
+    background: rgba(15, 23, 42, 0.75);
+    border: 1px solid rgba(248, 113, 113, 0.35);
+    color: #fca5a5;
+    padding: 2px 7px;
+    border-radius: 999px;
+    font-weight: 700;
+    font-size: 11px;
+  }
+
+  .unit-name {
+    font-size: 10px;
+    font-weight: 700;
+    color: #fff;
+    text-shadow: 0 1px 3px #000, 0 0 6px #000;
+    white-space: nowrap;
+    margin-bottom: 2px;
+  }
+
+  .hp-bar-wrap {
+    width: 64px;
+    height: 7px;
+    background: rgba(0, 0, 0, 0.72);
+    border: 1px solid rgba(255, 255, 255, 0.25);
+    border-radius: 4px;
+    overflow: hidden;
+    margin-bottom: 4px;
+  }
+  .hp-bar-fill {
+    height: 100%;
+    width: 100%;
+    transition: width 0.12s linear;
+  }
+  .hero-hp { background: linear-gradient(90deg, #16a34a, #4ade80); }
+
+  /* 斬撃・フローティング文字エフェクト */
+  #fx-layer {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    z-index: 7;
+    overflow: hidden;
+  }
+
+  .float-text {
+    position: absolute;
+    font-weight: 800;
+    pointer-events: none;
+    text-shadow: 0 2px 3px rgba(0,0,0,0.92), 0 0 6px rgba(0,0,0,0.85);
+    white-space: nowrap;
+    animation: floatUp 0.85s ease-out forwards;
+  }
+  .float-dmg { color: #ffffff; font-size: 14px; }
+  .float-crit {
+    color: #fde047;
+    font-size: 19px;
+    text-shadow: 0 0 8px rgba(234, 179, 8, 0.9), 0 2px 4px #000;
+    animation: floatCrit 0.95s ease-out forwards;
+  }
+  .float-super-crit {
+    color: #ff4d4d;
+    font-size: 23px;
+    text-shadow: 0 0 12px rgba(239, 68, 68, 0.95), 0 2px 4px #000;
+    animation: floatCrit 1.05s ease-out forwards;
+  }
+  .float-hyper-crit {
+    font-size: 27px;
+    background: linear-gradient(90deg, #f472b6, #fde047, #4ade80, #38bdf8, #f472b6);
+    background-size: 200% auto;
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    filter: drop-shadow(0 0 8px rgba(255,255,255,0.85)) drop-shadow(0 2px 3px #000);
+    animation: floatCrit 1.15s ease-out forwards, rainbowFlow 1.2s linear infinite;
+  }
+  .float-hero-dmg { color: #fca5a5; font-size: 12px; }
+  .float-loot {
+    color: #67e8f9;
+    font-size: 12px;
+    animation: floatLoot 1.3s ease-out forwards;
+  }
+
+  @keyframes floatUp {
+    0% { opacity: 1; transform: translate(-50%, 0) scale(0.9); }
+    20% { opacity: 1; transform: translate(-50%, -10px) scale(1.1); }
+    100% { opacity: 0; transform: translate(-50%, -44px) scale(0.95); }
+  }
+  @keyframes floatCrit {
+    0% { opacity: 1; transform: translate(-50%, 0) scale(0.7); }
+    18% { opacity: 1; transform: translate(-50%, -14px) scale(1.35); }
+    100% { opacity: 0; transform: translate(-50%, -56px) scale(1); }
+  }
+  @keyframes floatLoot {
+    0% { opacity: 0; transform: translate(-50%, 8px); }
+    15% { opacity: 1; transform: translate(-50%, -6px); }
+    80% { opacity: 1; transform: translate(-50%, -32px); }
+    100% { opacity: 0; transform: translate(-50%, -46px); }
+  }
+
+  .slash-fx {
+    position: absolute;
+    width: 44px;
+    height: 4px;
+    background: linear-gradient(90deg, transparent, #fff, #fde047);
+    border-radius: 99px;
+    box-shadow: 0 0 10px #fff;
+    animation: slashPop 0.2s ease-out forwards;
+  }
+  @keyframes slashPop {
+    0% { opacity: 1; transform: translate(-50%, -50%) rotate(-35deg) scaleX(0.3); }
+    60% { opacity: 1; transform: translate(-50%, -50%) rotate(-35deg) scaleX(1.2); }
+    100% { opacity: 0; transform: translate(-50%, -50%) rotate(-35deg) scaleX(1.4); }
+  }
+
+  /* 枠フラッシュ（金・虹ドロップ演出） */
+  #view-frame {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    transition: box-shadow 0.2s;
+  }
+  #view-frame.flash-legend {
+    animation: frameFlashGold 0.85s ease-out;
+  }
+  #view-frame.flash-mythic {
+    animation: frameFlashRainbow 1.2s ease-out;
+  }
+  @keyframes frameFlashGold {
+    0% { box-shadow: inset 0 0 60px rgba(251, 191, 36, 0.95), 0 0 36px rgba(251, 191, 36, 0.9); }
+    100% { box-shadow: inset 0 0 0 rgba(251, 191, 36, 0), 0 0 0 rgba(251, 191, 36, 0); }
+  }
+  @keyframes frameFlashRainbow {
+    0% { box-shadow: inset 0 0 70px rgba(244, 114, 182, 0.95), 0 0 42px rgba(56, 189, 248, 0.95); }
+    50% { box-shadow: inset 0 0 55px rgba(250, 204, 21, 0.85), 0 0 35px rgba(74, 222, 128, 0.85); }
+    100% { box-shadow: inset 0 0 0 rgba(0,0,0,0), 0 0 0 rgba(0,0,0,0); }
+  }
+
+  /* 非ブロッキング・ドロップ＆昇格バナー */
+  #loot-banner {
+    position: absolute;
+    left: 50%;
+    top: 42px;
+    transform: translateX(-50%) translateY(-10px);
+    padding: 6px 14px;
+    border-radius: 999px;
+    background: rgba(15, 23, 42, 0.94);
+    border: 2px solid var(--gold);
+    color: #fff;
+    font-size: 12px;
+    font-weight: 800;
+    z-index: 12;
+    pointer-events: none;
+    opacity: 0;
+    white-space: nowrap;
+    box-shadow: 0 6px 24px rgba(0,0,0,0.75);
+    transition: opacity 0.2s, transform 0.2s;
+  }
+  #loot-banner.show {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+  #loot-banner.shaking {
+    animation: bannerShake 0.42s ease-in-out infinite;
+  }
+  @keyframes bannerShake {
+    0%, 100% { transform: translateX(-50%) rotate(0deg) scale(1); }
+    25% { transform: translateX(-52%) rotate(-2deg) scale(1.04); }
+    75% { transform: translateX(-48%) rotate(2deg) scale(1.04); }
+  }
+
+  .battle-banner {
+    position: absolute;
+    left: 50%;
+    top: 46%;
+    transform: translate(-50%, -50%);
+    background: rgba(15, 23, 42, 0.92);
+    border: 1px solid rgba(248, 113, 113, 0.5);
+    color: #fecaca;
+    padding: 5px 14px;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 700;
+    z-index: 8;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.25s;
+    text-align: center;
+  }
+  .battle-banner.show { opacity: 1; }
+
+  /* 中ペイン：ステータス＆装備中スロット */
+  #status-pane {
+    flex: 1.15;
+    min-width: 390px;
+    padding: 8px 12px;
+    border-right: 1px solid var(--border-color);
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    gap: 6px;
+    background: rgba(15, 23, 42, 0.55);
+  }
+
+  .stage-controls {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+  }
+
+  .stage-nav {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .btn {
+    background: var(--bg-card);
+    color: var(--text-main);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    padding: 4px 9px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.15s;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    white-space: nowrap;
+  }
+  .btn:hover:not(:disabled) {
+    background: var(--bg-card-hover);
+    border-color: rgba(148, 163, 184, 0.5);
+  }
+  .btn:active:not(:disabled) {
+    transform: translateY(1px);
+  }
+  .btn:disabled {
+    opacity: 0.42;
+    cursor: not-allowed;
+  }
+  .btn-primary {
+    background: linear-gradient(135deg, #2563eb, #1d4ed8);
+    border-color: #60a5fa;
+  }
+  .btn-primary:hover:not(:disabled) {
+    background: linear-gradient(135deg, #3b82f6, #2563eb);
+  }
+  .btn-gold {
+    background: linear-gradient(135deg, #b45309, #92400e);
+    border-color: #fbbf24;
+    color: #fef3c7;
+  }
+  .btn-gold:hover:not(:disabled) {
+    background: linear-gradient(135deg, #d97706, #b45309);
+  }
+  .btn-mythic {
+    background: linear-gradient(135deg, #db2777, #7c3aed, #2563eb);
+    border-color: #f472b6;
+    color: #fff;
+  }
+  .btn-mythic:hover:not(:disabled) {
+    filter: brightness(1.15);
+  }
+  .btn-danger {
+    background: rgba(185, 28, 28, 0.35);
+    border-color: rgba(248, 113, 113, 0.5);
+    color: #fecaca;
+  }
+  .btn-danger:hover:not(:disabled) {
+    background: rgba(220, 38, 38, 0.55);
+  }
+  .btn-toggle.active {
+    background: rgba(22, 163, 74, 0.25);
+    border-color: var(--green);
+    color: var(--green);
+  }
+  .btn-chest-ready {
+    border-color: var(--gold);
+    box-shadow: 0 0 10px rgba(251, 191, 36, 0.35);
+    animation: pulseUp 1.6s infinite;
+  }
+
+  .stage-label-box {
+    min-width: 78px;
+    text-align: center;
+    font-weight: 700;
+    font-size: 12px;
+    background: rgba(0, 0, 0, 0.3);
+    padding: 3px 8px;
+    border-radius: 5px;
+    border: 1px solid var(--border-color);
+  }
+
+  .resource-chip {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    background: rgba(56, 189, 248, 0.12);
+    border: 1px solid rgba(56, 189, 248, 0.35);
+    color: #bae6fd;
+    padding: 3px 9px;
+    border-radius: 999px;
+    font-weight: 700;
+    font-size: 12px;
+    flex-shrink: 0;
+  }
+
+  .stats-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 4px 8px;
+    background: rgba(0, 0, 0, 0.24);
+    border: 1px solid rgba(255, 255, 255, 0.07);
+    border-radius: 8px;
+    padding: 6px 8px;
+  }
+  .stat-cell {
+    display: flex;
+    flex-direction: column;
+  }
+  .stat-k {
+    font-size: 10px;
+    color: var(--text-muted);
+  }
+  .stat-v {
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--text-main);
+  }
+  .stat-v.highlight { color: var(--gold); }
+
+  .equipped-row {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 6px;
+  }
+  .eq-mini-slot {
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: 7px;
+    padding: 4px 6px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    transition: all 0.15s;
+    min-width: 0;
+  }
+  .eq-mini-slot:hover {
+    transform: translateY(-1px);
+    background: var(--bg-card-hover);
+  }
+  .eq-mini-icon {
+    font-size: 19px;
+    flex-shrink: 0;
+  }
+  .eq-mini-info {
+    min-width: 0;
+    flex: 1;
+  }
+  .eq-mini-name {
+    font-size: 10px;
+    font-weight: 700;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .eq-mini-sub {
+    font-size: 10px;
+    color: var(--text-muted);
+  }
+
+  /* 右ペイン：メニュー＆ドロップログ */
+  #action-pane {
+    flex: 1;
+    min-width: 280px;
+    padding: 8px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    background: rgba(11, 17, 32, 0.7);
+  }
+
+  .action-top-row {
+    display: flex;
+    gap: 5px;
+    align-items: center;
+  }
+
+  #btn-open-equip {
+    flex: 1;
+    padding: 6px 8px;
+    font-size: 12px;
+    position: relative;
+  }
+
+  .up-badge {
+    background: #16a34a;
+    color: #fff;
+    font-size: 10px;
+    font-weight: 800;
+    padding: 1px 5px;
+    border-radius: 99px;
+    box-shadow: 0 0 8px rgba(74, 222, 128, 0.7);
+    animation: pulseUp 1.5s infinite;
+  }
+  @keyframes pulseUp {
+    0%, 100% { transform: scale(1); }
+    50% { transform: scale(1.07); }
+  }
+
+  .quick-tools {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 5px;
+    font-size: 11px;
+  }
+  .auto-salvage-select {
+    background: var(--bg-card);
+    color: var(--text-main);
+    border: 1px solid var(--border-color);
+    border-radius: 5px;
+    padding: 3px 6px;
+    font-size: 11px;
+    cursor: pointer;
+    flex: 1;
+  }
+
+  .log-box {
+    flex: 1;
+    background: rgba(0, 0, 0, 0.34);
+    border: 1px solid rgba(255, 255, 255, 0.07);
+    border-radius: 6px;
+    padding: 5px 8px;
+    overflow-y: auto;
+    font-size: 11px;
+    line-height: 1.45;
+    color: var(--text-muted);
+  }
+  .log-entry {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  /* =========================================================
+     装備・比較・強化 ドロワーパネル
+  ========================================================= */
+  #equip-drawer {
+    position: fixed;
+    left: 50%;
+    bottom: calc(var(--strip-h) + 10px);
+    transform: translateX(-50%) translateY(20px);
+    width: min(1140px, 97vw);
+    height: min(620px, calc(100vh - var(--strip-h) - 24px));
+    background: #0f172a;
+    border: 1px solid rgba(56, 189, 248, 0.45);
+    border-radius: 12px;
+    box-shadow: 0 20px 50px rgba(0, 0, 0, 0.85);
+    z-index: 50;
+    display: none;
+    flex-direction: column;
+    overflow: hidden;
+    opacity: 0;
+    transition: opacity 0.18s ease, transform 0.18s ease;
+  }
+  #equip-drawer.open {
+    display: flex;
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+
+  .drawer-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 14px;
+    background: #162033;
+    border-bottom: 1px solid var(--border-color);
+    gap: 10px;
+    flex-shrink: 0;
+    flex-wrap: wrap;
+  }
+  .drawer-title {
+    font-size: 14px;
+    font-weight: 800;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .drawer-body {
+    flex: 1;
+    display: grid;
+    grid-template-columns: 270px 1fr 330px;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .drawer-col {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    border-right: 1px solid var(--border-color);
+    padding: 10px;
+    gap: 8px;
+  }
+  .drawer-col:last-child {
+    border-right: none;
+  }
+
+  .col-heading {
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--text-muted);
+    letter-spacing: 0.04em;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+
+  .equipped-cards {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    overflow-y: auto;
+  }
+
+  .eq-full-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-left-width: 4px;
+    border-radius: 8px;
+    padding: 7px 9px;
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+  .eq-full-card:hover { background: var(--bg-card-hover); }
+  .eq-full-card.selected {
+    box-shadow: 0 0 0 2px var(--cyan);
+  }
+
+  .salvage-panel {
+    margin-top: auto;
+    background: rgba(0, 0, 0, 0.25);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .salvage-btns {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 5px;
+  }
+
+  .filter-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    flex-wrap: wrap;
+    flex-shrink: 0;
+  }
+  .filter-tabs {
+    display: flex;
+    gap: 4px;
+    flex-wrap: wrap;
+  }
+  .tab-btn {
+    padding: 3px 8px;
+    font-size: 11px;
+    border-radius: 5px;
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    color: var(--text-muted);
+    cursor: pointer;
+  }
+  .tab-btn.active {
+    background: rgba(56, 189, 248, 0.2);
+    border-color: var(--cyan);
+    color: #fff;
+    font-weight: 700;
+  }
+
+  .inv-list {
+    flex: 1;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding-right: 4px;
+  }
+
+  .inv-item {
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-left-width: 4px;
+    border-radius: 8px;
+    padding: 7px 9px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    transition: background 0.12s;
+  }
+  .inv-item:hover { background: var(--bg-card-hover); }
+  .inv-item.selected {
+    background: #23334d;
+    box-shadow: inset 0 0 0 1.5px var(--cyan);
+  }
+
+  .inv-icon-box {
+    font-size: 24px;
+    width: 34px;
+    height: 34px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(0, 0, 0, 0.28);
+    border-radius: 7px;
+    flex-shrink: 0;
+  }
+  .inv-mid {
+    flex: 1;
+    min-width: 0;
+  }
+  .inv-title-line {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font-weight: 700;
+    font-size: 12px;
+  }
+  .inv-name {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .inv-meta {
+    font-size: 11px;
+    color: var(--text-muted);
+    display: flex;
+    gap: 8px;
+    margin-top: 2px;
+    flex-wrap: wrap;
+  }
+
+  .inv-right {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 4px;
+    flex-shrink: 0;
+  }
+
+  .dps-diff {
+    font-size: 11px;
+    font-weight: 800;
+    padding: 1px 6px;
+    border-radius: 4px;
+  }
+  .dps-up { color: var(--green); background: rgba(74, 222, 128, 0.14); }
+  .dps-down { color: var(--red); background: rgba(248, 113, 113, 0.14); }
+  .dps-same { color: var(--text-muted); background: rgba(148, 163, 184, 0.12); }
+
+  .detail-scroll {
+    flex: 1;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .detail-header-card {
+    background: rgba(0, 0, 0, 0.26);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 9px 10px;
+  }
+  .detail-title-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .detail-item-name {
+    font-size: 14px;
+    font-weight: 800;
+  }
+  .rarity-tag {
+    font-size: 10px;
+    font-weight: 700;
+    padding: 1px 6px;
+    border-radius: 4px;
+    border: 1px solid currentColor;
+    white-space: nowrap;
+  }
+
+  .dps-compare-banner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background: rgba(15, 23, 42, 0.75);
+    border: 1px solid var(--border-color);
+    border-radius: 7px;
+    padding: 7px 10px;
+    font-size: 12px;
+  }
+
+  .stat-compare-box {
+    background: rgba(0, 0, 0, 0.22);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 8px;
+    padding: 8px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+  }
+  .substat-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 12px;
+    padding: 3px 6px;
+    border-radius: 4px;
+    transition: background 0.15s, box-shadow 0.15s;
+  }
+  .substat-row.roulette-active {
+    background: rgba(56, 189, 248, 0.35);
+    box-shadow: inset 0 0 0 1px var(--cyan);
+  }
+  .substat-row.flash-upgrade {
+    background: rgba(251, 191, 36, 0.38);
+    box-shadow: 0 0 12px rgba(251, 191, 36, 0.45);
+  }
+  .boost-pip {
+    display: inline-block;
+    font-size: 10px;
+    font-weight: 800;
+    color: #fde047;
+    background: rgba(234, 179, 8, 0.2);
+    border: 1px solid rgba(250, 204, 21, 0.45);
+    border-radius: 4px;
+    padding: 0 4px;
+    margin-left: 5px;
+  }
+
+  .detail-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+    margin-top: auto;
+    padding-top: 6px;
+  }
+  .btn-span2 {
+    grid-column: span 2;
+  }
+
+  .upgrade-feedback {
+    font-size: 11px;
+    min-height: 18px;
+    color: var(--gold);
+    font-weight: 700;
+    text-align: center;
+  }
+
+  /* モーダル共通（放置収益・宝箱ガチャ・100F突破祝福） */
+  .modal-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.74);
+    backdrop-filter: blur(4px);
+    z-index: 100;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: 12px;
+  }
+  .modal-backdrop.open {
+    display: flex;
+  }
+  .modal-box {
+    background: #162033;
+    border: 1px solid rgba(251, 191, 36, 0.5);
+    border-radius: 12px;
+    width: min(460px, 95vw);
+    max-height: 92vh;
+    overflow-y: auto;
+    padding: 16px 18px;
+    box-shadow: 0 18px 45px rgba(0,0,0,0.85);
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .modal-box.wide {
+    width: min(740px, 96vw);
+  }
+  .modal-box h2 {
+    font-size: 16px;
+    color: var(--gold);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .offline-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    background: rgba(0, 0, 0, 0.25);
+    border-radius: 8px;
+    padding: 10px;
+  }
+  .offline-loot-list {
+    max-height: 130px;
+    overflow-y: auto;
+    background: rgba(0, 0, 0, 0.25);
+    border-radius: 6px;
+    padding: 6px 8px;
+    font-size: 11px;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+
+  /* 宝箱ガチャUI */
+  .chest-summary-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background: rgba(0, 0, 0, 0.28);
+    padding: 8px 12px;
+    border-radius: 8px;
+    border: 1px solid var(--border-color);
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .chest-controls-row {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+  .chest-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(195px, 1fr));
+    gap: 8px;
+    min-height: 140px;
+    max-height: 330px;
+    overflow-y: auto;
+    padding: 4px;
+    background: rgba(0, 0, 0, 0.22);
+    border-radius: 8px;
+  }
+  .gacha-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-left-width: 4px;
+    border-radius: 8px;
+    padding: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    transition: transform 0.2s, box-shadow 0.2s;
+  }
+  .gacha-card.pop {
+    animation: cardPop 0.28s ease-out;
+  }
+  .gacha-card.shaking {
+    animation: cardShake 0.35s infinite;
+  }
+  @keyframes cardPop {
+    0% { transform: scale(0.82); opacity: 0.4; }
+    65% { transform: scale(1.05); opacity: 1; }
+    100% { transform: scale(1); }
+  }
+  @keyframes cardShake {
+    0%, 100% { transform: translateX(0); }
+    25% { transform: translateX(-3px) rotate(-1.5deg); }
+    75% { transform: translateX(3px) rotate(1.5deg); }
+  }
+
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: rgba(0, 0, 0, 0.2); }
+  ::-webkit-scrollbar-thumb { background: rgba(148, 163, 184, 0.35); border-radius: 99px; }
+  ::-webkit-scrollbar-thumb:hover { background: rgba(148, 163, 184, 0.55); }
+
+  @media (max-height: 460px) {
+    :root { --strip-h: 174px; }
+    #equip-drawer {
+      inset: 0;
+      left: 0;
+      bottom: 0;
+      width: 100vw;
+      height: 100vh;
+      border-radius: 0;
+      transform: none;
+    }
+    #equip-drawer.open {
+      transform: none;
+    }
+  }
+
+  @media (max-width: 900px) {
+    #strip-shell {
+      overflow-x: auto;
+    }
+    .drawer-body {
+      grid-template-columns: 220px 1fr 270px;
+    }
+  }
+
+  @media (max-width: 760px) {
+    .drawer-body {
+      display: flex;
+      flex-direction: column;
+      overflow-y: auto;
+    }
+    .drawer-col {
+      border-right: none;
+      border-bottom: 1px solid var(--border-color);
+      flex: none;
+    }
+    .drawer-col:last-child {
+      border-bottom: none;
+    }
+    .inv-list {
+      max-height: 240px;
+    }
+  }
+
+  /* ===== クロウラー統合レイアウト ===== */
+  body { display: flex; flex-direction: column; }
+  #crawler-area { position: relative; flex: 1; min-height: 0; background: #000; overflow: hidden; }
+  #detail-actions { flex-shrink: 0; }
+  #detail-actions:empty { display: none; }
+  canvas#view { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  canvas#map {
+    position: absolute; top: 42px; right: 10px; width: 132px; height: 132px;
+    border-radius: 8px; border: 1px solid rgba(148,163,184,.45);
+    background: rgba(2,6,16,.85); z-index: 9;
+  }
+  #crawler-area .battle-hud { position: absolute; top: 0; left: 0; right: 0; }
+  #hero-hud {
+    position: absolute; left: 12px; bottom: 10px; z-index: 8;
+    background: rgba(2,6,16,.55); padding: 5px 9px; border-radius: 8px;
+    border: 1px solid rgba(148,163,184,.3);
+  }
+  #hero-hud .hp-bar-wrap { width: 170px; height: 9px; margin-bottom: 0; }
+  .crawler-controls { position: absolute; right: 10px; bottom: 10px; z-index: 9; display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+
+  @media (max-width: 560px) {
+    #hero-hud .hp-bar-wrap { width: 112px; }
+    .crawler-controls .btn { padding: 3px 6px; font-size: 11px; }
+  }
+</style>
+</head>
+<body>
+
+  <!-- クロウラー画面 -->
+  <div id="crawler-area">
+    <div id="view-frame">
+    <canvas id="view"></canvas>
+    <canvas id="map" width="152" height="152"></canvas>
+
+    <div class="battle-hud">
+      <div class="stage-badge">
+        <span id="biome-name">🌲 緑の草原</span>
+        <span id="stage-hud-num" style="color:var(--cyan);">St.1</span>
+        <span class="title-chip" id="hud-title-chip" style="display:none;">👑 魔王殺し</span>
+        <span class="buff-chip" id="hud-buff-chip" style="display:none;">🔮 バフ</span>
+        <div class="wave-pills" id="wave-pills"></div>
+      </div>
+      <div class="hud-right-info">
+        <span class="rec-pill" id="hud-max-dmg" title="これまでの最大単発ダメージ">最大: 0</span>
+        <span id="kill-counter">討伐: 0</span>
+        <span class="dps-pill" id="hud-dps">DPS 0</span>
+      </div>
+    </div>
+
+    <div id="loot-banner"></div>
+
+    <div id="hero-hud">
+      <div class="unit-name" id="hero-hp-text">HP 120 / 120</div>
+      <div class="hp-bar-wrap"><div class="hp-bar-fill hero-hp" id="hero-hp-bar"></div></div>
+    </div>
+
+    <div id="fx-layer"></div>
+    <div class="battle-banner" id="battle-banner">体勢を立て直した！</div>
+    </div><!-- /view-frame -->
+
+    <div class="crawler-controls">
+      <button class="btn" id="btn-crawl-pause">⏸ 一時停止</button>
+      <button class="btn" id="btn-crawl-speed">速度 ×1</button>
+      <button class="btn" id="btn-crawl-style" title="移動の描画方式を切り替えます（滑らか＝円弧コーナリング／ステップ＝コマ送り）">🚶 滑らか</button>
+      <button class="btn" id="btn-crawl-size">サイズ 小</button>
+    </div>
+  </div>
+
+  <!-- メイン横長ストリップ -->
+  <div id="strip-shell">
+    <!-- 中：ステータス＆ステージ操作＆装備中 -->
+    <div id="status-pane">
+      <div class="stage-controls">
+        <div class="stage-nav">
+          <button class="btn" id="btn-stage-prev" title="前のステージ">◀</button>
+          <div class="stage-label-box" id="stage-box-label">St.1 / 1</div>
+          <button class="btn" id="btn-stage-next" title="次のステージ">▶</button>
+          <button class="btn btn-toggle active" id="btn-auto-prog" title="ボス撃破時に自動で次のステージへ進みます">自動進行</button>
+        </div>
+        <div class="resource-chip" title="強化石（装備の強化に使用）">
+          <span>💎</span>
+          <span id="stone-count">0</span>
+        </div>
+      </div>
+
+      <div class="stats-grid">
+        <div class="stat-cell"><span class="stat-k">攻撃力</span><span class="stat-v" id="st-atk">0</span></div>
+        <div class="stat-cell"><span class="stat-k">最大HP</span><span class="stat-v" id="st-hp">0</span></div>
+        <div class="stat-cell"><span class="stat-k">予想DPS</span><span class="stat-v highlight" id="st-dps">0</span></div>
+        <div class="stat-cell"><span class="stat-k">会心率</span><span class="stat-v" id="st-crit">0%</span></div>
+        <div class="stat-cell"><span class="stat-k">会心ダメ</span><span class="stat-v" id="st-cdmg">150%</span></div>
+        <div class="stat-cell"><span class="stat-k">攻撃速度</span><span class="stat-v" id="st-aspd">1.00/s</span></div>
+      </div>
+
+      <div class="equipped-row" id="mini-equipped-row"></div>
+    </div>
+
+    <!-- 右：バッグボタン＆宝箱＆クイックツール＆ログ -->
+    <div id="action-pane">
+      <div class="action-top-row">
+        <button class="btn btn-primary" id="btn-open-equip">
+          <span>🎒 装備・強化</span>
+          <span id="bag-count-label">(0/80)</span>
+          <span class="up-badge" id="upgrade-avail-badge" style="display:none;">▲UP</span>
+        </button>
+        <button class="btn" id="btn-open-chest" title="ボス討伐などで貯まった封印の宝箱を開封します">
+          <span>📦 宝箱</span>
+          <span id="chest-count-badge">0</span>
+        </button>
+        <button class="btn" id="btn-sound" title="効果音 ON/OFF">🔇</button>
+        <button class="btn btn-danger" id="btn-reset" title="セーブデータ初期化">🗑️</button>
+      </div>
+
+      <div class="quick-tools">
+        <span style="color:var(--text-muted);white-space:nowrap;">自動分解:</span>
+        <select class="auto-salvage-select" id="select-auto-salvage">
+          <option value="-1">しない（すべて入手）</option>
+          <option value="0">コモン以下を自動分解</option>
+          <option value="1">レア以下を自動分解</option>
+          <option value="2">エピック以下を自動分解</option>
+          <option value="3">レジェンド以下を自動分解</option>
+        </select>
+      </div>
+
+      <div class="log-box" id="log-box"></div>
+    </div>
+  </div>
+
+  <!-- 装備・比較・強化ドロワー -->
+  <div id="equip-drawer">
+    <div class="drawer-header">
+      <div class="drawer-title">
+        <span>🎒 装備管理・強化</span>
+        <span class="resource-chip" style="font-size:12px;">💎 <span id="drawer-stone-count">0</span></span>
+        <span style="font-size:12px;color:var(--text-muted);font-weight:500;">現在予想DPS: <strong style="color:var(--gold);" id="drawer-cur-dps">0</strong></span>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px;">
+        <span style="font-size:11px;color:var(--text-muted);">※+3ごとにサブステランダム強化</span>
+        <button class="btn" id="btn-close-equip">✕ 閉じる</button>
+      </div>
+    </div>
+
+    <div class="drawer-body">
+      <div class="drawer-col">
+        <div class="col-heading"><span>装備中の武具（クリックで詳細・強化）</span></div>
+        <div class="equipped-cards" id="drawer-equipped-list"></div>
+
+        <div class="salvage-panel">
+          <div class="col-heading"><span>一括分解（ロック・装備中を除外）</span></div>
+          <div class="salvage-btns">
+            <button class="btn btn-danger" id="btn-salvage-common" style="font-size:11px;">コモンのみ</button>
+            <button class="btn btn-danger" id="btn-salvage-rare" style="font-size:11px;">レア以下</button>
+            <button class="btn btn-danger" id="btn-salvage-epic" style="font-size:11px;">エピック以下</button>
+            <button class="btn btn-danger" id="btn-salvage-weaker" style="font-size:11px;" title="現在装備よりHPが高い防具は保護されます">DPS低下のみ</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="drawer-col">
+        <div class="filter-bar">
+          <div class="filter-tabs" id="slot-filter-tabs">
+            <button class="tab-btn active" data-filter="all">すべて</button>
+            <button class="tab-btn" data-filter="weapon">⚔️ 武器</button>
+            <button class="tab-btn" data-filter="armor">🛡️ 防具</button>
+            <button class="tab-btn" data-filter="accessory">💍 アクセ</button>
+          </div>
+          <select class="auto-salvage-select" id="select-sort" style="flex:0 0 auto;">
+            <option value="newest">新着順</option>
+            <option value="dps">DPS増加順</option>
+            <option value="rarity">レア度順</option>
+            <option value="stage">ステージLv順</option>
+          </select>
+        </div>
+        <div class="inv-list" id="inv-list"></div>
+      </div>
+
+      <div class="drawer-col" id="detail-col">
+        <div class="col-heading"><span>詳細・装備比較・強化</span></div>
+        <div class="detail-scroll" id="detail-content">
+          <div style="color:var(--text-muted);text-align:center;margin-top:40px;">装備を選択してください</div>
+        </div>
+        <div id="detail-actions"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 封印の宝箱ガチャモーダル -->
+  <div class="modal-backdrop" id="chest-modal">
+    <div class="modal-box wide">
+      <div style="display:flex;justify-content:space-between;align-items:center;">
+        <h2>📦 封印の宝箱ガチャ</h2>
+        <button class="btn" id="btn-close-chest">✕ 閉じる</button>
+      </div>
+      <div class="chest-summary-row">
+        <div style="font-size:12px;">
+          所持：📦 封印箱 <strong style="color:var(--gold);" id="modal-chest-normal">0</strong> 個
+          ／ 🌈 虹の宝箱 <strong class="mythic-text" id="modal-chest-mythic">0</strong> 個
+          <span style="color:var(--text-muted);margin-left:8px;">（排出基準: St.<span id="modal-chest-stage">1</span>）</span>
+        </div>
+        <label style="font-size:11px;color:var(--text-muted);display:flex;align-items:center;gap:4px;cursor:pointer;">
+          <input type="checkbox" id="chk-chest-autosalvage" checked>
+          <span>自動分解設定を適用</span>
+        </label>
+      </div>
+      <div class="chest-controls-row">
+        <button class="btn btn-gold" id="btn-pull-1">📦 1個開ける</button>
+        <button class="btn btn-primary" id="btn-pull-10">✨ まとめて開ける（最大10個）</button>
+        <button class="btn btn-mythic" id="btn-pull-mythic">🌈 虹の宝箱を開ける (確定)</button>
+      </div>
+      <div class="chest-grid" id="chest-result-grid">
+        <div style="grid-column:1/-1;text-align:center;color:var(--text-muted);margin-top:45px;font-size:12px;">
+          ボス討伐や100層節目、放置収益で宝箱が貯まります！<br>上のボタンから開封してみましょう。
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 100階制覇（裏世界＆虹色解放）祝福モーダル -->
+  <div class="modal-backdrop" id="milestone-modal">
+    <div class="modal-box">
+      <h2 class="mythic-text" style="font-size:18px;">👑 祝・100階「大魔王」討伐達成！</h2>
+      <p style="font-size:12px;line-height:1.6;color:var(--text-main);">
+        表の迷宮を踏破し、称号 <strong>【👑 魔王殺し】</strong> を獲得しました！<br>
+        ここから先は終わりなきインフレと射幸心の裏世界が開かれます。
+      </p>
+      <div style="background:rgba(0,0,0,0.28);border:1px solid rgba(244,114,182,0.45);border-radius:8px;padding:10px;font-size:12px;line-height:1.7;">
+        <div>🌌 <strong>裏世界（101階〜）開放</strong>：100階ごとに迷宮の色が変化！</div>
+        <div>🌈 <strong>新レアリティ「ミシック」解禁</strong>：虹色装備＆<strong>攻撃時追撃ヒット+1</strong>！</div>
+        <div>🔥 <strong>会心率100%突破解禁</strong>：100%超で赤字「超会心(3倍)」、200%超で虹字「極会心(8倍)」！</div>
+        <div>🎁 <strong>初回踏破記念</strong>：🌈 虹の宝箱 ×1 ＋ 📦 封印の宝箱 ×5 獲得！</div>
+      </div>
+      <button class="btn btn-mythic" id="btn-close-milestone" style="padding:9px;">裏世界（101階〜）へ挑む！</button>
+    </div>
+  </div>
+
+  <!-- 放置収益モーダル -->
+  <div class="modal-backdrop" id="offline-modal">
+    <div class="modal-box">
+      <h2>🌙 おかえりなさい！放置収益</h2>
+      <p style="font-size:12px;color:var(--text-muted);" id="offline-time-desc">不在中も勇者は戦い続けました！</p>
+      <div class="offline-grid">
+        <div><div class="stat-k">経過時間</div><div class="stat-v" id="off-duration">-</div></div>
+        <div><div class="stat-k">討伐した敵</div><div class="stat-v" id="off-kills">-</div></div>
+        <div><div class="stat-k">獲得強化石</div><div class="stat-v" style="color:var(--cyan);" id="off-stones">-</div></div>
+        <div><div class="stat-k">獲得装備 / 箱</div><div class="stat-v" style="color:var(--gold);" id="off-items">-</div></div>
+      </div>
+      <div class="offline-loot-list" id="offline-loot-list"></div>
+      <button class="btn btn-primary" id="btn-close-offline" style="padding:8px;">受け取って冒険を続ける</button>
+    </div>
+  </div>
+
+<script>
+(() => {
+  'use strict';
+
+  // =========================================================
+  // 定数・マスタデータ
+  // =========================================================
+  const SAVE_KEY = 'strip_hero_idle_save_v1';
+  const CRAWL_SIZE_KEY = 'strip_hero_crawl_size_v2';
+  const CRAWL_STYLE_KEY = 'strip_hero_crawl_style_v1';
+  const MAX_BAG_SIZE = 80;
+  const MAX_OFFLINE_SEC = 86400; // 最大24時間
+  const HERO_BASE = { atk: 12, hp: 110, critRate: 10, critDmg: 150, aspd: 1.0 };
+
+  const RARITIES = [
+    { id: 0, name: 'コモン',       color: '#cbd5e1', border: '#64748b', bg: 'rgba(203,213,225,0.09)', mainMult: 1.00, subMult: 1.00, maxLv: 10, minSub: 2, maxSub: 2, dustBase: 3 },
+    { id: 1, name: 'レア',         color: '#38bdf8', border: '#0284c7', bg: 'rgba(56,189,248,0.12)',  mainMult: 1.38, subMult: 1.24, maxLv: 12, minSub: 2, maxSub: 3, dustBase: 9 },
+    { id: 2, name: 'エピック',     color: '#c084fc', border: '#9333ea', bg: 'rgba(192,132,252,0.14)', mainMult: 1.85, subMult: 1.50, maxLv: 15, minSub: 3, maxSub: 4, dustBase: 24 },
+    { id: 3, name: 'レジェンダリー', color: '#fbbf24', border: '#d97706', bg: 'rgba(251,191,36,0.16)',  mainMult: 2.50, subMult: 1.85, maxLv: 20, minSub: 4, maxSub: 4, dustBase: 60 },
+    { id: 4, name: 'ミシック',     color: '#f472b6', border: '#ec4899', bg: 'linear-gradient(135deg, rgba(244,114,182,0.22), rgba(56,189,248,0.18), rgba(251,191,36,0.18))', mainMult: 3.70, subMult: 2.45, maxLv: 25, minSub: 4, maxSub: 5, dustBase: 160 }
+  ];
+
+  const SLOTS = {
+    weapon:    { key: 'weapon',    label: '武器',   icon: '⚔️', mainType: 'atk',     mainLabel: '攻撃力',   unit: '' },
+    armor:     { key: 'armor',     label: '防具',   icon: '🛡️', mainType: 'hp',      mainLabel: '最大HP',   unit: '' },
+    accessory: { key: 'accessory', label: 'アクセ', icon: '💍', mainType: 'critDmg', mainLabel: '会心ダメ', unit: '%' }
+  };
+
+  const SUB_POOL = [
+    { key: 'atkPct',   label: '攻撃力',   unit: '%', min: 4.0, max: 9.0,  stageScale: 0.025 },
+    { key: 'critRate', label: '会心率',   unit: '%', min: 2.5, max: 6.0,  stageScale: 0.008 },
+    { key: 'critDmg',  label: '会心ダメ', unit: '%', min: 8.0, max: 20.0, stageScale: 0.035 },
+    { key: 'aspd',     label: '攻撃速度', unit: '%', min: 3.0, max: 7.5,  stageScale: 0.015 }
+  ];
+  const SUB_MAP = Object.fromEntries(SUB_POOL.map(s => [s.key, s]));
+
+  const PREFIXES = [
+    ['古びた', '鉄の', '旅人の', '見習いの', '標準の'],
+    ['熟練の', '鋭利な', '蒼き', '鋼の', '魔導の'],
+    ['英雄の', '紫電の', '覇者の', '深淵の', '幻影の'],
+    ['神域の', '竜殺しの', '星辰の', '創世の', '超越の'],
+    ['虹輝の', '無限の', '終焉の', '天地創造の', '神話級']
+  ];
+
+  const BASE_NAMES = {
+    weapon:    [
+      { name: '剣', icon: '🗡️' }, { name: '大剣', icon: '⚔️' }, { name: '戦斧', icon: '🪓' },
+      { name: '長槍', icon: '🔱' }, { name: '刀', icon: '🗡️' }, { name: '聖剣', icon: '⚔️' }
+    ],
+    armor:     [
+      { name: '戦衣', icon: '👕' }, { name: '胸当て', icon: '🦺' }, { name: '重鎧', icon: '🛡️' },
+      { name: '外套', icon: '🥋' }, { name: '聖鎧', icon: '🛡️' }
+    ],
+    accessory: [
+      { name: '指輪', icon: '💍' }, { name: '護符', icon: '🧿' }, { name: '首飾り', icon: '📿' },
+      { name: '宝冠', icon: '👑' }, { name: '紋章', icon: '💠' }
+    ]
+  };
+
+  const BIOMES = [
+    {
+      name: '🌲 緑の草原',
+      mobs: [{ name: 'スライム', icon: '🟢' }, { name: 'ゴブリン', icon: '👺' }, { name: '野狼', icon: '🐺' }],
+      boss: { name: 'キングスライム', icon: '🦠' }
+    },
+    {
+      name: '🌵 灼熱の砂漠',
+      mobs: [{ name: '大サソリ', icon: '🦂' }, { name: '砂漠ミイラ', icon: '🤕' }, { name: '毒蛇', icon: '🐍' }],
+      boss: { name: '砂塵ゴーレム', icon: '🗿' }
+    },
+    {
+      name: '🌋 紅蓮の火山',
+      mobs: [{ name: '炎トカゲ', icon: '🦎' }, { name: '鬼火', icon: '🔥' }, { name: '爆砕鬼', icon: '👹' }],
+      boss: { name: '獄炎ドラゴン', icon: '🐉' }
+    },
+    {
+      name: '❄️ 極寒の雪原',
+      mobs: [{ name: '雪だるま魔', icon: '⛄' }, { name: '氷狼', icon: '🐺' }, { name: '雪男', icon: '🦍' }],
+      boss: { name: '白銀の氷竜', icon: '🐲' }
+    },
+    {
+      name: '🏰 闇の魔王城',
+      mobs: [{ name: '骸骨剣士', icon: '💀' }, { name: '吸血鬼', icon: '🧛' }, { name: '悪魔騎士', icon: '👿' }],
+      boss: { name: '深淵の将軍', icon: '😈' }
+    }
+  ];
+
+  // 100階ごとに切り替わる3D迷宮パレット
+  const FLOOR_PALETTES = [
+    { name: '地下迷宮', wall: [96, 116, 158],  fogWall: [15, 23, 42], ceil0: '#05070f', ceil1: '#1b2a4a', floor0: '#233149', floor1: '#0a0f1c' },
+    { name: '黄金神殿', wall: [176, 142, 74],  fogWall: [42, 31, 14], ceil0: '#140f05', ceil1: '#423114', floor0: '#4a3818', floor1: '#1a1207' },
+    { name: '紅蓮深淵', wall: [164, 66, 72],   fogWall: [44, 12, 16], ceil0: '#140406', ceil1: '#451218', floor0: '#4a181d', floor1: '#1a0608' },
+    { name: '翡翠魔窟', wall: [64, 152, 122],  fogWall: [12, 38, 30], ceil0: '#04120e', ceil1: '#123b2e', floor0: '#164536', floor1: '#061712' },
+    { name: '虚空星界', wall: [138, 92, 188],  fogWall: [28, 16, 48], ceil0: '#090414', ceil1: '#2a164a', floor0: '#311a54', floor1: '#0e061c' }
+  ];
+
+  // =========================================================
+  // ユーティリティ & Web Audio 効果音
+  // =========================================================
+  const uid = () => 'itm_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
+  const rand = (min, max) => Math.random() * (max - min) + min;
+  const randInt = (min, max) => Math.floor(rand(min, max + 1));
+  const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
+  const fmt = (n) => {
+    if (n >= 1e36) return n.toExponential(2).replace('e+', 'e');
+    if (n >= 1e33) return (n / 1e33).toFixed(2) + 'Dc';
+    if (n >= 1e30) return (n / 1e30).toFixed(2) + 'No';
+    if (n >= 1e27) return (n / 1e27).toFixed(2) + 'Oc';
+    if (n >= 1e24) return (n / 1e24).toFixed(2) + 'Sp';
+    if (n >= 1e21) return (n / 1e21).toFixed(2) + 'Sx';
+    if (n >= 1e18) return (n / 1e18).toFixed(2) + 'Qi';
+    if (n >= 1e15) return (n / 1e15).toFixed(2) + 'Qa';
+    if (n >= 1e12) return (n / 1e12).toFixed(2) + 'T';
+    if (n >= 1e9)  return (n / 1e9).toFixed(2) + 'B';
+    if (n >= 1e6)  return (n / 1e6).toFixed(2) + 'M';
+    if (n >= 1e5)  return (n / 1e3).toFixed(1) + 'K';
+    return Math.round(n).toLocaleString('ja-JP');
+  };
+
+  let audioCtx = null;
+  function playNote(freq, startOffset, dur, type = 'sine', vol = 0.07) {
+    if (!audioCtx) return;
+    const now = audioCtx.currentTime + startOffset;
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.type = type;
+    osc.frequency.setValueAtTime(freq, now);
+    gain.gain.setValueAtTime(vol, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + dur);
+    osc.connect(gain);
+    gain.connect(audioCtx.destination);
+    osc.start(now);
+    osc.stop(now + dur + 0.01);
+  }
+
+  function playSfx(type) {
+    if (!state.soundOn) return;
+    try {
+      if (!audioCtx) {
+        const AC = window.AudioContext || window.webkitAudioContext;
+        if (!AC) return;
+        audioCtx = new AC();
+      }
+      if (audioCtx.state === 'suspended') audioCtx.resume();
+      const now = audioCtx.currentTime;
+
+      if (type === 'hit') {
+        const osc = audioCtx.createOscillator(), gain = audioCtx.createGain();
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(190, now);
+        osc.frequency.exponentialRampToValueAtTime(75, now + 0.06);
+        gain.gain.setValueAtTime(0.06, now);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.06);
+        osc.connect(gain); gain.connect(audioCtx.destination);
+        osc.start(now); osc.stop(now + 0.065);
+      } else if (type === 'crit') {
+        const osc = audioCtx.createOscillator(), gain = audioCtx.createGain();
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(520, now);
+        osc.frequency.exponentialRampToValueAtTime(220, now + 0.11);
+        gain.gain.setValueAtTime(0.07, now);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.11);
+        osc.connect(gain); gain.connect(audioCtx.destination);
+        osc.start(now); osc.stop(now + 0.12);
+      } else if (type === 'drop') {
+        playNote(587, 0, 0.10, 'sine', 0.06);
+        playNote(880, 0.06, 0.14, 'sine', 0.06);
+      } else if (type === 'upgrade') {
+        playNote(440, 0, 0.08, 'sine', 0.07);
+        playNote(660, 0.05, 0.08, 'sine', 0.07);
+        playNote(990, 0.10, 0.14, 'sine', 0.07);
+      } else if (type === 'roulette') {
+        playNote(740, 0, 0.035, 'square', 0.03);
+      } else if (type === 'jackpot') {
+        playNote(523, 0, 0.10, 'triangle', 0.08);
+        playNote(659, 0.06, 0.10, 'triangle', 0.08);
+        playNote(784, 0.12, 0.12, 'triangle', 0.08);
+        playNote(1046, 0.18, 0.25, 'sine', 0.09);
+      } else if (type === 'legend') {
+        playNote(523, 0, 0.12, 'triangle', 0.08);
+        playNote(659, 0.08, 0.12, 'triangle', 0.08);
+        playNote(784, 0.16, 0.12, 'triangle', 0.08);
+        playNote(1046, 0.24, 0.35, 'sine', 0.09);
+      } else if (type === 'mythic') {
+        playNote(523, 0, 0.12, 'sine', 0.09);
+        playNote(659, 0.07, 0.12, 'sine', 0.09);
+        playNote(784, 0.14, 0.12, 'sine', 0.09);
+        playNote(1046, 0.21, 0.14, 'triangle', 0.09);
+        playNote(1318, 0.28, 0.16, 'triangle', 0.09);
+        playNote(1568, 0.35, 0.45, 'sine', 0.10);
+      } else if (type === 'chest') {
+        playNote(392, 0, 0.08, 'triangle', 0.06);
+        playNote(523, 0.05, 0.12, 'triangle', 0.07);
+      }
+    } catch (e) {}
+  }
+
+  // =========================================================
+  // ゲーム状態
+  // =========================================================
+  let state = createDefaultState();
+
+  const battle = {
+    mode: 'WALKING', // 'WALKING' | 'FIGHTING' | 'TRANSITION' | 'RECOVERING'
+    heroX: 15,
+    enemyX: 50,
+    heroHp: 110,
+    heroAtkTimer: 0,
+    enemyAtkTimer: 0,
+    rareEscapeTimer: 0,
+    transTimer: 0,
+    recoverTimer: 0,
+    needNewFloor: false,
+    enemy: null
+  };
+
+  let uiState = {
+    drawerOpen: false,
+    filterSlot: 'all',
+    sortMode: 'newest',
+    selectedItemId: null,
+    lastBoostedSubKey: null,
+    upgradeFeedback: '',
+    isRollingUpgrade: false,
+    isOpeningChests: false,
+    lootBannerTimer: null,
+    lootPromoteTimer: null,
+    pendingUpgradeFlush: null,
+    pendingChestFlushes: [],
+    activeTimeouts: new Set(),
+    activeIntervals: new Set()
+  };
+
+  function addTrackedTimeout(fn, ms) {
+    const id = setTimeout(() => {
+      uiState.activeTimeouts.delete(id);
+      fn();
+    }, ms);
+    uiState.activeTimeouts.add(id);
+    return id;
+  }
+
+  function clearAllPendingTimers() {
+    for (const id of uiState.activeTimeouts) clearTimeout(id);
+    for (const id of uiState.activeIntervals) clearInterval(id);
+    uiState.activeTimeouts.clear();
+    uiState.activeIntervals.clear();
+  }
+
+  function flushPendingRewards() {
+    if (uiState.pendingUpgradeFlush) {
+      const fn = uiState.pendingUpgradeFlush;
+      uiState.pendingUpgradeFlush = null;
+      fn();
+    }
+    if (uiState.pendingChestFlushes.length > 0) {
+      const list = uiState.pendingChestFlushes.splice(0);
+      for (const fn of list) fn();
+    }
+  }
+
+  // =========================================================
+  // クロウラー（疑似3Dダンジョン）モジュール
+  // =========================================================
+  const CRAWL_COLS = 19, CRAWL_ROWS = 19;
+
+  const crawler = {
+    grid: [], stairs: { x: CRAWL_COLS - 2, y: CRAWL_ROWS - 2 }, explored: new Set(), depth: new Map(),
+    hero: { cx: 1, cy: 1, x: 1.5, y: 1.5, angle: 0 },
+    phase: 'decide', moveFrom: null, moveTo: null, moveT: 0, turnT: 0,
+    fromAngle: 0, targetAngle: 0, path: null, segs: null, segIdx: 0, segS: 0,
+    enemyCell: null, enemyShake: 0, dying: null,
+    events: [], // 迷路内の宝箱・祭壇オブジェクト
+    floorBuff: null, // 'atk' | 'aspd' | 'drop' | null
+    floorStage: 0, paused: false, speed: 1,
+    moveStyle: 'smooth',
+    colStep: 1,
+    palette: FLOOR_PALETTES[0]
+  };
+
+  const crawlView = document.getElementById('view');
+  const crawlCtx = crawlView.getContext('2d');
+  const crawlMapCv = document.getElementById('map');
+  const crawlMapCtx = crawlMapCv.getContext('2d');
+  const crawlKey = (x, y) => x + ',' + y;
+
+  const CRAWL_SIZES = [
+    { label: '小', w: 640, h: 360 },
+    { label: '大', w: 0, h: 0 }
+  ];
+  let crawlSizeIdx = 0;
+
+  function updateMapPosition() {
+    const hudEl = document.querySelector('#crawler-area .battle-hud');
+    if (hudEl) {
+      crawlMapCv.style.top = (hudEl.offsetHeight + 6) + 'px';
+    }
+  }
+
+  function fitCanvas() {
+    const area = document.getElementById('crawler-area');
+    const frame = document.getElementById('view-frame');
+    if (!area || !frame) return;
+    const aw = area.clientWidth || 960, ah = area.clientHeight || 540;
+    const sz = CRAWL_SIZES[crawlSizeIdx];
+    let w, h;
+    if (sz.w === 0) {
+      const sc = Math.min(aw / 16, ah / 9);
+      w = Math.floor(16 * sc); h = Math.floor(9 * sc);
+    } else {
+      const sc = Math.min(1, aw / sz.w, ah / sz.h);
+      w = Math.floor(sz.w * sc); h = Math.floor(sz.h * sc);
+    }
+    frame.style.width = w + 'px';
+    frame.style.height = h + 'px';
+    crawlView.width = Math.max(320, w);
+    crawlView.height = Math.max(180, h);
+    const mapPx = Math.round(Math.min(150, Math.max(88, w * 0.16)));
+    crawlMapCv.style.width = mapPx + 'px';
+    crawlMapCv.style.height = mapPx + 'px';
+    updateMapPosition();
+  }
+
+  function applyCrawlSize() {
+    document.getElementById('btn-crawl-size').textContent = 'サイズ ' + CRAWL_SIZES[crawlSizeIdx].label;
+    fitCanvas();
+  }
+
+  function applyCrawlStyleUI() {
+    const btn = document.getElementById('btn-crawl-style');
+    if (crawler.moveStyle === 'step') {
+      btn.textContent = '🧱 ステップ';
+      btn.classList.add('active');
+    } else {
+      btn.textContent = '🚶 滑らか';
+      btn.classList.remove('active');
+    }
+  }
+
+  function crawlGenMaze() {
+    const grid = Array.from({ length: CRAWL_ROWS }, () => Array(CRAWL_COLS).fill(1));
+    const stack = [[1, 1]]; grid[1][1] = 0;
+    const dirs = [[2, 0], [-2, 0], [0, 2], [0, -2]];
+    while (stack.length) {
+      const [cx, cy] = stack[stack.length - 1];
+      const opts = dirs.filter(([dx, dy]) => {
+        const nx = cx + dx, ny = cy + dy;
+        return nx > 0 && ny > 0 && nx < CRAWL_COLS - 1 && ny < CRAWL_ROWS - 1 && grid[ny][nx] === 1;
+      });
+      if (!opts.length) { stack.pop(); continue; }
+      const [dx, dy] = opts[randInt(0, opts.length - 1)];
+      grid[cy + dy / 2][cx + dx / 2] = 0; grid[cy + dy][cx + dx] = 0;
+      stack.push([cx + dx, cy + dy]);
+    }
+    for (let i = 0; i < 16; i++) {
+      const x = randInt(1, CRAWL_COLS - 2), y = randInt(1, CRAWL_ROWS - 2);
+      if ((x + y) % 2 === 1) grid[y][x] = 0;
+    }
+    crawler.grid = grid;
+    crawler.stairs = crawlFarthest(1, 1);
+    crawler.depth = crawlBfs(1, 1).dist;
+  }
+
+  function crawlBfs(sx, sy) {
+    const dist = new Map([[crawlKey(sx, sy), 0]]), prev = new Map(), q = [[sx, sy]];
+    while (q.length) {
+      const [x, y] = q.shift();
+      for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const nx = x + dx, ny = y + dy, k = crawlKey(nx, ny);
+        if (nx < 0 || ny < 0 || nx >= CRAWL_COLS || ny >= CRAWL_ROWS || crawler.grid[ny][nx] === 1 || dist.has(k)) continue;
+        dist.set(k, dist.get(crawlKey(x, y)) + 1); prev.set(k, [x, y]); q.push([nx, ny]);
+      }
+    }
+    return { dist, prev };
+  }
+
+  function crawlFarthest(sx, sy) {
+    const { dist } = crawlBfs(sx, sy); let best = { x: sx, y: sy }, bd = -1;
+    for (const [k, d] of dist) if (d > bd) { bd = d; const [x, y] = k.split(',').map(Number); best = { x, y }; }
+    return best;
+  }
+
+  function crawlBfsPath(sx, sy, tx, ty) {
+    const { prev } = crawlBfs(sx, sy); const path = []; let cur = [tx, ty];
+    if (!prev.has(crawlKey(tx, ty)) && !(sx === tx && sy === ty)) return null;
+    while (cur) { path.unshift({ x: cur[0], y: cur[1] }); cur = prev.get(crawlKey(cur[0], cur[1])); }
+    return path;
+  }
+
+  function crawlReveal() {
+    const h = crawler.hero, grid = crawler.grid;
+    crawler.explored.add(crawlKey(h.cx, h.cy));
+    for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const nx = h.cx + dx, ny = h.cy + dy;
+      if (nx >= 0 && ny >= 0 && nx < CRAWL_COLS && ny < CRAWL_ROWS) crawler.explored.add(crawlKey(nx, ny));
+    }
+    const ca = Math.cos(h.angle), sa = Math.sin(h.angle);
+    const fx = Math.abs(ca) >= Math.abs(sa) ? (ca >= 0 ? 1 : -1) : 0;
+    const fy = Math.abs(ca) >= Math.abs(sa) ? 0 : (sa >= 0 ? 1 : -1);
+    const px = -fy, py = fx;
+    for (const sd of [1, -1]) {
+      const tx = h.cx + fx + px * sd, ty = h.cy + fy + py * sd;
+      if (tx < 0 || ty < 0 || tx >= CRAWL_COLS || ty >= CRAWL_ROWS) continue;
+      const frontWall = grid[h.cy + fy]?.[h.cx + fx] === 1;
+      const sideWall = grid[h.cy + py * sd]?.[h.cx + px * sd] === 1;
+      if (frontWall && sideWall) continue;
+      crawler.explored.add(crawlKey(tx, ty));
+    }
+  }
+
+  function crawlAngDiff(a, b) {
+    let d = a - b;
+    while (d > Math.PI) d -= Math.PI * 2;
+    while (d < -Math.PI) d += Math.PI * 2;
+    return d;
+  }
+
+  function enterFloor() {
+    crawler.floorStage = state.stage;
+    crawler.floorBuff = null;
+    crawler.events = [];
+    battle.needNewFloor = false;
+    crawlGenMaze();
+    const h = crawler.hero;
+    h.cx = 1; h.cy = 1; h.x = 1.5; h.y = 1.5; h.angle = 0;
+    crawler.phase = 'decide'; crawler.path = null;
+    crawler.segs = null; crawler.segIdx = 0; crawler.segS = 0;
+    crawler.dying = null; crawler.enemyCell = null;
+    crawler.explored = new Set();
+    crawlReveal();
+    applyBiomeVisuals();
+    spawnCurrentWaveEnemy();
+    updateStripUI();
+  }
+
+  function placeWaveEnemy() {
+    const h = crawler.hero;
+    if (battle.enemy && battle.enemy.isBoss) {
+      if (h.cx === crawler.stairs.x && h.cy === crawler.stairs.y) {
+        for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          const nx = h.cx + dx, ny = h.cy + dy;
+          if (nx > 0 && ny > 0 && nx < CRAWL_COLS - 1 && ny < CRAWL_ROWS - 1 && crawler.grid[ny][nx] === 0) {
+            h.cx = nx; h.cy = ny; h.x = nx + 0.5; h.y = ny + 0.5;
+            h.angle = Math.atan2(crawler.stairs.y - ny, crawler.stairs.x - nx);
+            crawlReveal();
+            break;
+          }
+        }
+      }
+      crawler.enemyCell = { x: crawler.stairs.x, y: crawler.stairs.y };
+    } else {
+      const heroDepth = crawler.depth.get(crawlKey(h.cx, h.cy)) ?? 0;
+      const { dist } = crawlBfs(h.cx, h.cy);
+
+      const minD = crawler.speed >= 4 ? 2 : crawler.speed === 2 ? 4 : 6;
+      const maxD = crawler.speed >= 4 ? 5 : crawler.speed === 2 ? 9 : 99;
+      const isStairs = (x, y) => x === crawler.stairs.x && y === crawler.stairs.y;
+      const isHero = (x, y) => x === h.cx && y === h.cy;
+
+      const pick = (lo, hi, depthOk) => {
+        const list = [];
+        for (const [k, d] of dist) {
+          if (d < lo || d > hi) continue;
+          const [x, y] = k.split(',').map(Number);
+          if (isHero(x, y) || isStairs(x, y)) continue;
+          if (!depthOk(crawler.depth.get(k) ?? 0)) continue;
+          list.push(k);
+        }
+        const unexp = list.filter(k => !crawler.explored.has(k));
+        const pool = unexp.length ? unexp : list;
+        if (!pool.length) return null;
+        const [x, y] = pool[randInt(0, pool.length - 1)].split(',').map(Number);
+        return { x, y };
+      };
+
+      const deepest = () => {
+        let best = null, bd = -1;
+        for (const [k, d] of dist) {
+          if (d < 1) continue;
+          const [x, y] = k.split(',').map(Number);
+          if (isHero(x, y)) continue;
+          const dep = crawler.depth.get(k) ?? 0;
+          if (dep > bd) { bd = dep; best = { x, y }; }
+        }
+        return best;
+      };
+
+      crawler.enemyCell =
+        pick(minD, maxD, dep => dep > heroDepth) ||
+        pick(minD, maxD, dep => dep >= heroDepth) ||
+        pick(minD, 99, dep => dep > heroDepth) ||
+        pick(2, maxD, () => true) ||
+        pick(1, 99, () => true) ||
+        deepest() ||
+        { x: crawler.stairs.x, y: crawler.stairs.y };
+    }
+    crawler.path = null;
+    crawler.segs = null;
+    crawler.segIdx = 0;
+    crawler.segS = 0;
+    crawler.phase = 'decide';
+
+    // 進行ルート途中に突発イベント（🎁黄金宝箱 / 🔮祭壇）を配置して3D視界に出す
+    maybePlacePathEvent();
+  }
+
+  function maybePlacePathEvent() {
+    if (!crawler.enemyCell) return;
+    const path = crawlBfsPath(crawler.hero.cx, crawler.hero.cy, crawler.enemyCell.x, crawler.enemyCell.y);
+    if (!path || path.length < 4) return;
+    if (crawler.events.filter(e => !e.triggered).length >= 2) return;
+
+    const roll = Math.random();
+    let type = null, icon = '';
+    if (roll < 0.28) {
+      type = 'chest'; icon = '🎁';
+    } else if (roll < 0.44 && !crawler.floorBuff) {
+      type = 'shrine'; icon = '🔮';
+    }
+    if (!type) return;
+
+    const mid = path[randInt(1, path.length - 2)];
+    if (mid.x === crawler.stairs.x && mid.y === crawler.stairs.y) return;
+    if (crawler.events.some(e => !e.triggered && e.x === mid.x && e.y === mid.y)) return;
+
+    crawler.events.push({ type, icon, x: mid.x, y: mid.y, triggered: false });
+  }
+
+  function checkPathEvents() {
+    const h = crawler.hero;
+    for (const ev of crawler.events) {
+      if (ev.triggered) continue;
+      if (Math.hypot((ev.x + 0.5) - h.x, (ev.y + 0.5) - h.y) < 0.65 || (h.cx === ev.x && h.cy === ev.y)) {
+        ev.triggered = true;
+        triggerMazeEvent(ev);
+      }
+    }
+  }
+
+  function triggerMazeEvent(ev) {
+    if (ev.type === 'chest') {
+      const stoneGain = Math.max(3, Math.round((4 + state.stage * 1.5) * rand(0.9, 1.4)));
+      state.stones += stoneGain;
+      const r = Math.random();
+      let rar = 1;
+      if (state.cleared100 && r < 0.05) rar = 4;
+      else if (r < 0.24) rar = 3;
+      else if (r < 0.62) rar = 2;
+
+      const it = generateItem(state.stage, rar, null, false, true);
+      spawnFloatText(50, 42, `🎁 +${stoneGain}💎`, 'float-loot');
+      addLog(`迷宮の黄金宝箱を開封！ (+${stoneGain}💎)`, '#fbbf24');
+      processItemDrop(it);
+      updateStripUI();
+    } else if (ev.type === 'shrine') {
+      const roll = Math.random();
+      if (roll < 0.34) {
+        crawler.floorBuff = 'atk';
+        showLootBanner('🔮 謎の祭壇：このフロア中 攻撃力 1.5倍！', '#c084fc');
+        addLog('🔮 祭壇効果：このフロア中 攻撃力 1.5倍！', '#c084fc');
+      } else if (roll < 0.68) {
+        crawler.floorBuff = 'aspd';
+        showLootBanner('🔮 謎の祭壇：このフロア中 攻撃速度 1.5倍！', '#38bdf8');
+        addLog('🔮 祭壇効果：このフロア中 攻撃速度 1.5倍！', '#38bdf8');
+      } else {
+        crawler.floorBuff = 'drop';
+        showLootBanner('🔮 謎の祭壇：このフロア中 ドロップ率 2倍！', '#4ade80');
+        addLog('🔮 祭壇効果：このフロア中 ドロップ率 2倍！', '#4ade80');
+      }
+      playSfx('upgrade');
+      updateStripUI();
+    }
+  }
+
+  function crawlStartFight() {
+    battle.mode = 'FIGHTING';
+    const stats = calcHeroStats(state.equipped, true);
+    battle.heroAtkTimer = (1 / stats.aspd) * 0.65;
+    battle.enemyAtkTimer = 0.4;
+    if (battle.enemy && battle.enemy.isRareEscape) {
+      battle.rareEscapeTimer = 10.0;
+    }
+  }
+
+  function crawlDecideStep() {
+    const c = crawler, h = c.hero;
+    if (!battle.enemy || !c.enemyCell) return;
+    const dx = c.enemyCell.x - h.cx, dy = c.enemyCell.y - h.cy;
+    if (dx === 0 && dy === 0) {
+      crawlStartFight();
+      return;
+    }
+    if (Math.abs(dx) + Math.abs(dy) === 1) {
+      c.targetAngle = Math.atan2(dy, dx);
+      c.fromAngle = h.angle; c.turnT = 0;
+      if (Math.abs(crawlAngDiff(c.targetAngle, c.fromAngle)) < 0.001) crawlStartFight();
+      else c.phase = 'face';
+      return;
+    }
+    if (!c.path || c.path.length < 2) {
+      c.path = crawlBfsPath(h.cx, h.cy, c.enemyCell.x, c.enemyCell.y);
+    }
+    if (!c.path || c.path.length < 2) return;
+    c.moveFrom = { x: h.cx, y: h.cy };
+    c.moveTo = c.path[1];
+    c.path = c.path.slice(1);
+    c.targetAngle = Math.atan2(c.moveTo.y - h.cy, c.moveTo.x - h.cx);
+    c.fromAngle = h.angle; c.turnT = 0;
+    if (Math.abs(crawlAngDiff(c.targetAngle, c.fromAngle)) < 0.001) { c.phase = 'step'; c.moveT = 0; }
+    else c.phase = 'turn';
+  }
+
+  // 円弧フィレット付き滑らか移動パス生成（角での引っかかり・斜め擦り防止）
+  function buildSmoothSegments(path, goalIdx, startX, startY, cornerR = 0.42) {
+    const pts = [];
+    for (let i = 0; i <= goalIdx; i++) {
+      pts.push({ x: path[i].x + 0.5, y: path[i].y + 0.5 });
+    }
+    if (pts.length === 0) return [];
+    pts[0] = { x: startX, y: startY };
+    if (pts.length === 1) return [];
+
+    // 同じ方向が連続する直線を間引く（中点経由でも一直線になるように）
+    const simplified = [pts[0]];
+    for (let i = 1; i < pts.length - 1; i++) {
+      const a = simplified[simplified.length - 1];
+      const b = pts[i];
+      const d = pts[i + 1];
+      const cross = (b.x - a.x) * (d.y - b.y) - (b.y - a.y) * (d.x - b.x);
+      if (Math.abs(cross) > 1e-5) {
+        simplified.push(b);
+      }
+    }
+    simplified.push(pts[pts.length - 1]);
+
+    const segs = [];
+    const pushLine = (x1, y1, x2, y2) => {
+      const len = Math.hypot(x2 - x1, y2 - y1);
+      if (len > 1e-5) {
+        segs.push({ type: 'line', x1, y1, x2, y2, len, ang: Math.atan2(y2 - y1, x2 - x1) });
+      }
+    };
+
+    let cur = simplified[0];
+    for (let i = 1; i < simplified.length - 1; i++) {
+      const p = simplified[i];
+      const next = simplified[i + 1];
+      const v1x = p.x - cur.x, v1y = p.y - cur.y;
+      const v2x = next.x - p.x, v2y = next.y - p.y;
+      const l1 = Math.hypot(v1x, v1y);
+      const l2 = Math.hypot(v2x, v2y);
+      if (l1 < 1e-5 || l2 < 1e-5) continue;
+
+      const u1x = v1x / l1, u1y = v1y / l1;
+      const u2x = v2x / l2, u2y = v2y / l2;
+      const dot = clamp(u1x * u2x + u1y * u2y, -1, 1);
+
+      if (dot > 0.999) continue;
+
+      // 折り返し（180度）
+      if (dot < -0.999) {
+        pushLine(cur.x, cur.y, p.x, p.y);
+        cur = p;
+        continue;
+      }
+
+      const dMax = Math.min(cornerR, l1 * 0.45, l2 * 0.45);
+      const tIn = { x: p.x - u1x * dMax, y: p.y - u1y * dMax };
+      const tOut = { x: p.x + u2x * dMax, y: p.y + u2y * dMax };
+
+      pushLine(cur.x, cur.y, tIn.x, tIn.y);
+
+      const cross = u1x * u2y - u1y * u2x;
+      if (Math.abs(dot) < 1e-3 && Math.abs(Math.abs(cross) - 1) < 1e-3) {
+        // 直交コーナー：完全な90度円弧（接線＝視線が常に進行方向に一致）
+        const r = dMax;
+        const n1x = cross > 0 ? -u1y : u1y;
+        const n1y = cross > 0 ? u1x : -u1x;
+        const cx = tIn.x + n1x * r;
+        const cy = tIn.y + n1y * r;
+        const a0 = Math.atan2(tIn.y - cy, tIn.x - cx);
+        const da = cross > 0 ? Math.PI / 2 : -Math.PI / 2;
+        segs.push({ type: 'arc', cx, cy, r, a0, da, len: r * (Math.PI / 2) });
+      } else {
+        // 非直交角（万一のオフセンター開始時）：2次ベジェ近似
+        const steps = 8;
+        let prevPt = tIn;
+        for (let k = 1; k <= steps; k++) {
+          const t = k / steps;
+          const mt = 1 - t;
+          const qx = mt * mt * tIn.x + 2 * mt * t * p.x + t * t * tOut.x;
+          const qy = mt * mt * tIn.y + 2 * mt * t * p.y + t * t * tOut.y;
+          pushLine(prevPt.x, prevPt.y, qx, qy);
+          prevPt = { x: qx, y: qy };
+        }
+      }
+      cur = tOut;
+    }
+
+    const last = simplified[simplified.length - 1];
+    pushLine(cur.x, cur.y, last.x, last.y);
+    return segs;
+  }
+
+  function evalSmoothSeg(seg, s, h) {
+    const u = seg.len > 0 ? clamp(s / seg.len, 0, 1) : 1;
+    if (seg.type === 'line') {
+      h.x = seg.x1 + (seg.x2 - seg.x1) * u;
+      h.y = seg.y1 + (seg.y2 - seg.y1) * u;
+      h.angle = seg.ang;
+    } else {
+      const a = seg.a0 + seg.da * u;
+      h.x = seg.cx + seg.r * Math.cos(a);
+      h.y = seg.cy + seg.r * Math.sin(a);
+      h.angle = a + (seg.da > 0 ? Math.PI / 2 : -Math.PI / 2);
+    }
+  }
+
+  function crawlWalk(dt) {
+    const c = crawler, h = c.hero;
+
+    // ステップ（コマ送り）モード
+    if (c.moveStyle === 'step') {
+      const snapRate = crawler.speed === 1 ? 1.1 : crawler.speed === 2 ? 1.9 : 2.8;
+      const mdt = dt * snapRate;
+      if (c.phase === 'turn' || c.phase === 'face') {
+        c.turnT += mdt;
+        if (c.turnT >= 0.17) {
+          h.angle = c.targetAngle;
+          if (c.phase === 'turn') { c.phase = 'step'; c.moveT = 0; crawlReveal(); }
+          else crawlStartFight();
+        }
+        return;
+      }
+      if (c.phase === 'step') {
+        c.moveT += mdt;
+        if (c.moveT >= 0.24) {
+          h.cx = c.moveTo.x; h.cy = c.moveTo.y;
+          h.x = h.cx + 0.5; h.y = h.cy + 0.5;
+          c.phase = 'decide';
+          crawlReveal();
+          checkPathEvents();
+          crawlDecideStep();
+        }
+        return;
+      }
+      crawlDecideStep();
+      return;
+    }
+
+    // ===== 滑らか円弧コーナリング移動 =====
+    if (!battle.enemy || !c.enemyCell) return;
+
+    const moveSpeed = crawler.speed === 1 ? 2.5 : crawler.speed === 2 ? 3.5 : 4.2;
+    const maxTurnRate = crawler.speed === 1 ? 5.4 : crawler.speed === 2 ? 7.6 : 9.2;
+
+    if (c.phase === 'face') {
+      const targetAngle = Math.atan2((c.enemyCell.y + 0.5) - h.y, (c.enemyCell.x + 0.5) - h.x);
+      const diff = crawlAngDiff(targetAngle, h.angle);
+      const stepAng = maxTurnRate * dt;
+      if (Math.abs(diff) <= stepAng) {
+        h.angle = targetAngle;
+        crawlStartFight();
+      } else {
+        h.angle += Math.sign(diff) * stepAng;
+      }
+      return;
+    }
+
+    if (!c.path) {
+      c.path = crawlBfsPath(h.cx, h.cy, c.enemyCell.x, c.enemyCell.y);
+      c.segs = null;
+      c.segIdx = 0;
+      c.segS = 0;
+    }
+    if (!c.path || c.path.length < 2) {
+      c.phase = 'face';
+      return;
+    }
+
+    const goalIdx = c.path.length - 2;
+    if (goalIdx < 1) {
+      const goalTile = c.path[0];
+      h.cx = goalTile.x; h.cy = goalTile.y;
+      h.x = goalTile.x + 0.5; h.y = goalTile.y + 0.5;
+      crawlReveal();
+      checkPathEvents();
+      c.phase = 'face';
+      return;
+    }
+
+    if (!c.segs) {
+      c.segs = buildSmoothSegments(c.path, goalIdx, h.x, h.y, 0.42);
+      c.segIdx = 0;
+      c.segS = 0;
+      if (!c.segs.length) {
+        c.phase = 'face';
+        return;
+      }
+    }
+
+    // 進行方向と初期向きが違う場合、移動前にその場で素早く向きを揃える
+    if (c.segIdx === 0 && c.segS === 0) {
+      const firstSeg = c.segs[0];
+      const startAng = firstSeg.type === 'line'
+        ? firstSeg.ang
+        : firstSeg.a0 + (firstSeg.da > 0 ? Math.PI / 2 : -Math.PI / 2);
+      const diff = crawlAngDiff(startAng, h.angle);
+      if (Math.abs(diff) > 0.03) {
+        const stepAng = maxTurnRate * 1.15 * dt;
+        if (Math.abs(diff) <= stepAng) {
+          h.angle = startAng;
+        } else {
+          h.angle += Math.sign(diff) * stepAng;
+          return;
+        }
+      } else {
+        h.angle = startAng;
+      }
+    }
+
+    let remDt = dt;
+    while (remDt > 1e-6 && c.segIdx < c.segs.length) {
+      const seg = c.segs[c.segIdx];
+      const spd = seg.type === 'line'
+        ? moveSpeed
+        : Math.min(moveSpeed, maxTurnRate * seg.r);
+      const remLen = seg.len - c.segS;
+      const needDt = remLen / spd;
+      if (remDt >= needDt) {
+        remDt -= needDt;
+        c.segS = seg.len;
+        evalSmoothSeg(seg, seg.len, h);
+        c.segIdx += 1;
+        c.segS = 0;
+      } else {
+        c.segS += spd * remDt;
+        remDt = 0;
+        evalSmoothSeg(seg, c.segS, h);
+      }
+    }
+
+    const ncx = clamp(Math.floor(h.x), 1, CRAWL_COLS - 2);
+    const ncy = clamp(Math.floor(h.y), 1, CRAWL_ROWS - 2);
+    if (ncx !== h.cx || ncy !== h.cy) {
+      h.cx = ncx; h.cy = ncy;
+      crawlReveal();
+    }
+    checkPathEvents();
+
+    if (c.segIdx >= c.segs.length) {
+      const goalTile = c.path[goalIdx];
+      h.cx = goalTile.x; h.cy = goalTile.y;
+      h.x = goalTile.x + 0.5; h.y = goalTile.y + 0.5;
+      crawlReveal();
+      checkPathEvents();
+      c.phase = 'face';
+    }
+  }
+
+  let crawlLastRender = performance.now();
+  function renderCrawler() {
+    const now = performance.now();
+    const rdt = Math.min(0.05, (now - crawlLastRender) / 1000); crawlLastRender = now;
+    if (crawler.enemyShake > 0) crawler.enemyShake -= rdt;
+    if (crawler.dying) { crawler.dying.t -= rdt; if (crawler.dying.t <= 0) crawler.dying = null; }
+
+    const cv = crawlView, ctx = crawlCtx;
+    const W = cv.width, H = cv.height;
+    if (!W || !H || !crawler.grid.length) return;
+    const h = crawler.hero, grid = crawler.grid, pal = crawler.palette;
+    const horizon = H / 2;
+
+    const ceil = ctx.createLinearGradient(0, 0, 0, horizon);
+    ceil.addColorStop(0, pal.ceil0); ceil.addColorStop(1, pal.ceil1);
+    ctx.fillStyle = ceil; ctx.fillRect(0, 0, W, horizon);
+
+    const fl = ctx.createLinearGradient(0, horizon, 0, H);
+    fl.addColorStop(0, pal.floor0); fl.addColorStop(1, pal.floor1);
+    ctx.fillStyle = fl; ctx.fillRect(0, horizon, W, H - horizon);
+
+    const dirX = Math.cos(h.angle), dirY = Math.sin(h.angle);
+    const planeX = -dirY * 0.66, planeY = dirX * 0.66;
+
+    const colStep = W > 800 ? 2 : 1;
+    crawler.colStep = colStep;
+    const zbuf = new Float32Array(Math.ceil(W / colStep));
+    const base = pal.wall, fogCol = pal.fogWall;
+
+    for (let sx = 0; sx < W; sx += colStep) {
+      const camX = 2 * (sx + colStep * 0.5) / W - 1;
+      const rdx = dirX + planeX * camX, rdy = dirY + planeY * camX;
+      let mx = Math.floor(h.x), my = Math.floor(h.y);
+      const ddx = Math.abs(1 / (rdx || 1e-9)), ddy = Math.abs(1 / (rdy || 1e-9));
+      let stepX, stepY, sdx, sdy;
+      if (rdx < 0) { stepX = -1; sdx = (h.x - mx) * ddx; } else { stepX = 1; sdx = (mx + 1 - h.x) * ddx; }
+      if (rdy < 0) { stepY = -1; sdy = (h.y - my) * ddy; } else { stepY = 1; sdy = (my + 1 - h.y) * ddy; }
+      let side = 0, hit = 0;
+      for (let i = 0; i < 64 && !hit; i++) {
+        if (sdx < sdy) { sdx += ddx; mx += stepX; side = 0; } else { sdy += ddy; my += stepY; side = 1; }
+        if (mx < 0 || my < 0 || mx >= CRAWL_COLS || my >= CRAWL_ROWS || grid[my][mx] === 1) hit = 1;
+      }
+      const dist = side === 0 ? sdx - ddx : sdy - ddy;
+      zbuf[(sx / colStep) | 0] = dist;
+      const lh = H / Math.max(dist, 0.0001);
+      const y0 = horizon - lh / 2, y1 = horizon + lh / 2;
+      const wallX = side === 0 ? h.y + dist * rdy : h.x + dist * rdx;
+      const frac = wallX - Math.floor(wallX);
+
+      const fog = Math.max(0.14, 1 - dist / 12.5);
+      const sideShade = side === 1 ? 0.76 : 1.0;
+
+      const seamAlpha = Math.max(0, 1 - dist / 6.5);
+      let seamShade = 1.0;
+      if (seamAlpha > 0 && (frac < 0.04 || frac > 0.96)) {
+        seamShade = 1 - 0.36 * seamAlpha;
+      }
+
+      const rCol = Math.round((base[0] * fog + fogCol[0] * (1 - fog)) * sideShade * seamShade);
+      const gCol = Math.round((base[1] * fog + fogCol[1] * (1 - fog)) * sideShade * seamShade);
+      const bCol = Math.round((base[2] * fog + fogCol[2] * (1 - fog)) * sideShade * seamShade);
+
+      ctx.fillStyle = `rgb(${rCol},${gCol},${bCol})`;
+      ctx.fillRect(sx, y0, colStep, y1 - y0);
+
+      const hAlpha = 0.22 * Math.max(0, 1 - dist / 6.0);
+      if (hAlpha > 0.02) {
+        ctx.fillStyle = `rgba(0,0,0,${hAlpha.toFixed(2)})`;
+        const hWall = y1 - y0;
+        for (let r = 1; r <= 3; r++) {
+          ctx.fillRect(sx, y0 + hWall * (r * 0.25), colStep, 1.5);
+        }
+      }
+    }
+
+    // 3Dスプライトを奥から手前へソートして描画
+    const sprites = [
+      { wx: crawler.stairs.x + 0.5, wy: crawler.stairs.y + 0.5, icon: '🪜', scale: 0.55, alpha: 1, shake: 0, glow: null }
+    ];
+    for (const ev of crawler.events) {
+      if (!ev.triggered) {
+        sprites.push({
+          wx: ev.x + 0.5, wy: ev.y + 0.5, icon: ev.icon, scale: 0.65, alpha: 1, shake: 0,
+          glow: ev.type === 'chest' ? 'rgba(251, 191, 36, 0.8)' : 'rgba(192, 132, 252, 0.8)'
+        });
+      }
+    }
+    if (crawler.dying) {
+      sprites.push({
+        wx: crawler.dying.wx, wy: crawler.dying.wy, icon: crawler.dying.icon,
+        scale: 0.95, alpha: Math.max(0, crawler.dying.t / 0.55), shake: 0, glow: null
+      });
+    }
+    if (battle.enemy && crawler.enemyCell && battle.mode !== 'TRANSITION') {
+      const shake = crawler.enemyShake > 0 ? (Math.random() - 0.5) * 10 : 0;
+      const glow = battle.enemy.isRareEscape
+        ? 'rgba(250, 204, 21, 0.95)'
+        : battle.enemy.isGreatDemon
+          ? 'rgba(244, 114, 182, 0.95)'
+          : battle.enemy.isMidBoss
+            ? 'rgba(192, 132, 252, 0.8)'
+            : null;
+      sprites.push({
+        wx: crawler.enemyCell.x + 0.5, wy: crawler.enemyCell.y + 0.5,
+        icon: battle.enemy.icon,
+        scale: battle.enemy.isGreatDemon ? 1.45 : battle.enemy.isBoss ? 1.25 : 0.95,
+        alpha: 1, shake, glow
+      });
+    }
+
+    sprites.sort((a, b) => {
+      const da = (a.wx - h.x) ** 2 + (a.wy - h.y) ** 2;
+      const db = (b.wx - h.x) ** 2 + (b.wy - h.y) ** 2;
+      return db - da;
+    });
+    for (const sp of sprites) {
+      crawlDrawSprite(sp.wx, sp.wy, sp.icon, zbuf, sp.scale, sp.alpha, sp.shake, sp.glow);
+    }
+
+    // 戦闘中の敵HPバー＆特殊敵タイマー
+    if (battle.enemy && crawler.enemyCell && battle.mode !== 'TRANSITION' && (battle.mode === 'FIGHTING' || crawler.phase === 'face')) {
+      const bw = 200, bx = (W - bw) / 2, by = 56;
+      ctx.fillStyle = 'rgba(0,0,0,.62)'; ctx.fillRect(bx - 2, by - 2, bw + 4, 12);
+      ctx.fillStyle = battle.enemy.isRareEscape ? '#eab308' : battle.enemy.isGreatDemon ? '#ec4899' : '#dc2626';
+      ctx.fillRect(bx, by, bw * Math.max(0, battle.enemy.hp / battle.enemy.maxHp), 8);
+      ctx.fillStyle = battle.enemy.isRareEscape ? '#fde047' : '#fff';
+      ctx.font = 'bold 13px sans-serif'; ctx.textAlign = 'center';
+      ctx.fillText(`${battle.enemy.name}  HP ${fmt(Math.max(0, battle.enemy.hp))}/${fmt(battle.enemy.maxHp)}`, W / 2, by - 8);
+
+      if (battle.enemy.isRareEscape && battle.mode === 'FIGHTING') {
+        const tw = 150, tx = (W - tw) / 2, ty = by + 16;
+        ctx.fillStyle = 'rgba(0,0,0,.55)'; ctx.fillRect(tx - 1, ty - 1, tw + 2, 7);
+        ctx.fillStyle = '#38bdf8';
+        ctx.fillRect(tx, ty, tw * clamp(battle.rareEscapeTimer / 10.0, 0, 1), 5);
+        ctx.fillStyle = '#bae6fd'; ctx.font = '11px sans-serif';
+        ctx.fillText(`逃走まで ${Math.max(0, battle.rareEscapeTimer).toFixed(1)}秒`, W / 2, ty + 16);
+      }
+    }
+
+    const vg = ctx.createRadialGradient(W / 2, H / 2, H * 0.42, W / 2, H / 2, H * 0.95);
+    vg.addColorStop(0, 'rgba(0,0,0,0)'); vg.addColorStop(1, 'rgba(0,0,0,0.5)');
+    ctx.fillStyle = vg; ctx.fillRect(0, 0, W, H);
+
+    renderCrawlMap();
+  }
+
+  function crawlDrawSprite(wx, wy, icon, zbuf, scale, alpha, shakeX, glowColor = null) {
+    const cv = crawlView, ctx = crawlCtx;
+    const W = cv.width, H = cv.height;
+    const h = crawler.hero;
+    const relX = wx - h.x, relY = wy - h.y;
+    const dirX = Math.cos(h.angle), dirY = Math.sin(h.angle);
+    const planeX = -dirY * 0.66, planeY = dirX * 0.66;
+    const invDet = 1 / (planeX * dirY - dirX * planeY);
+    const tx = invDet * (dirY * relX - dirX * relY);
+    const ty = invDet * (-planeY * relX + planeX * relY);
+    if (ty <= 0.15) return;
+    const screenX = (W / 2) * (1 + tx / ty);
+    const size = Math.min(H * 1.8, (H / ty) * scale);
+    const colStep = crawler.colStep || 2;
+    const col = Math.max(0, Math.min(zbuf.length - 1, Math.floor(screenX / colStep)));
+    if (ty > zbuf[col] + 0.05) return;
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    if (glowColor) {
+      ctx.shadowColor = glowColor;
+      ctx.shadowBlur = 16;
+    }
+    ctx.font = `${size}px sans-serif`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(icon, screenX + shakeX, H / 2 + size * 0.08);
+    ctx.restore();
+    ctx.textBaseline = 'alphabetic';
+  }
+
+  function renderCrawlMap() {
+    const mctx = crawlMapCtx, grid = crawler.grid;
+    if (!grid.length) return;
+    const S = crawlMapCv.width / CRAWL_COLS;
+    mctx.fillStyle = 'rgba(2,6,16,1)'; mctx.fillRect(0, 0, crawlMapCv.width, crawlMapCv.height);
+    for (const k of crawler.explored) {
+      const [x, y] = k.split(',').map(Number);
+      mctx.fillStyle = grid[y][x] === 1 ? '#3d5478' : '#131f36';
+      mctx.fillRect(x * S, y * S, S, S);
+    }
+    for (const ev of crawler.events) {
+      if (ev.triggered) continue;
+      if (crawler.explored.has(crawlKey(ev.x, ev.y))) {
+        mctx.fillStyle = ev.type === 'chest' ? '#fde047' : '#c084fc';
+        mctx.beginPath();
+        mctx.arc((ev.x + 0.5) * S, (ev.y + 0.5) * S, Math.max(2.2, S * 0.35), 0, Math.PI * 2);
+        mctx.fill();
+      }
+    }
+    if (crawler.explored.has(crawlKey(crawler.stairs.x, crawler.stairs.y))) {
+      mctx.fillStyle = '#fbbf24'; mctx.fillRect(crawler.stairs.x * S + 1, crawler.stairs.y * S + 1, S - 2, S - 2);
+    }
+    if (battle.enemy && battle.enemy.isRareEscape && crawler.enemyCell && crawler.explored.has(crawlKey(crawler.enemyCell.x, crawler.enemyCell.y))) {
+      mctx.fillStyle = (Date.now() % 400 < 200) ? '#fde047' : '#38bdf8';
+      mctx.fillRect(crawler.enemyCell.x * S + 1, crawler.enemyCell.y * S + 1, S - 2, S - 2);
+    }
+    const h = crawler.hero;
+    const cx = h.x * S, cy = h.y * S;
+    mctx.save(); mctx.translate(cx, cy); mctx.rotate(h.angle);
+    mctx.fillStyle = '#4ade80';
+    mctx.beginPath(); mctx.moveTo(6, 0); mctx.lineTo(-4, -4); mctx.lineTo(-4, 4); mctx.closePath(); mctx.fill();
+    mctx.restore();
+  }
+
+  function createDefaultState() {
+    const starterWeapon = generateItem(1, 0, 'weapon', true);
+    const starterArmor = generateItem(1, 0, 'armor', true);
+    const starterAcc = generateItem(1, 0, 'accessory', true);
+
+    return {
+      stage: 1,
+      maxStage: 1,
+      wave: 1,
+      autoProgress: true,
+      autoSalvageRarity: -1,
+      stones: 15,
+      kills: 0,
+      chests: 0,
+      mythicChests: 0,
+      cleared100: false,
+      maxDmg: 0,
+      soundOn: false,
+      equipped: {
+        weapon: starterWeapon,
+        armor: starterArmor,
+        accessory: starterAcc
+      },
+      inventory: [],
+      logs: ['冒険を開始しました！100階の大魔王を目指そう。'],
+      lastSaveTime: Date.now()
+    };
+  }
+
+  // =========================================================
+  // 装備生成・計算・ステータスロジック
+  // =========================================================
+  function rollRarity(stage, isBoss, fromChest = false) {
+    const canMythic = state.cleared100 || stage >= 101;
+    const deepTier = Math.floor(Math.max(0, stage - 1) / 100);
+    const stageBonus = Math.min(0.18, (stage - 1) * 0.006);
+    const bossBonus = isBoss ? 0.22 : 0;
+    const chestBoost = fromChest ? 1.7 : 1.0;
+
+    const pMythic = canMythic ? Math.min(0.14, (0.015 + deepTier * 0.015 + (isBoss ? 0.03 : 0)) * chestBoost) : 0;
+    const pLeg = Math.min(0.28, (0.02 + stageBonus * 0.35 + bossBonus * 0.25) * chestBoost);
+    const pEpic = Math.min(0.38, (0.10 + stageBonus * 0.55 + bossBonus * 0.40) * chestBoost);
+    const pRare = fromChest ? 0.42 : (0.28 + bossBonus * 0.25);
+
+    const r = Math.random();
+    if (r < pMythic) return 4;
+    if (r < pMythic + pLeg) return 3;
+    if (r < pMythic + pLeg + pEpic) return 2;
+    if (r < pMythic + pLeg + pEpic + pRare) return 1;
+    return 0;
+  }
+
+  function generateItem(stage, forcedRarity = null, forcedSlot = null, isStarter = false, isBoss = false, fromChest = false) {
+    const slotKeys = ['weapon', 'armor', 'accessory'];
+    const featured = slotKeys[(stage - 1) % 3];
+    const rollSlot = () => {
+      if (Math.random() < 0.60) return featured;
+      const others = slotKeys.filter(s => s !== featured);
+      return others[randInt(0, 1)];
+    };
+    const slot = forcedSlot || rollSlot();
+    const rarity = forcedRarity !== null ? forcedRarity : rollRarity(stage, isBoss, fromChest);
+    const rInfo = RARITIES[rarity];
+    const slotInfo = SLOTS[slot];
+
+    const pList = PREFIXES[rarity];
+    const bList = BASE_NAMES[slot];
+    const baseChoice = bList[randInt(0, bList.length - 1)];
+    const name = isStarter
+      ? (slot === 'weapon' ? '見習いの剣' : slot === 'armor' ? '旅人の布服' : '銅の指輪')
+      : `${pList[randInt(0, pList.length - 1)]}${baseChoice.name}`;
+
+    const stagePow = Math.pow(1.24, stage - 1);
+    const variance = isStarter ? 1.0 : rand(0.90, 1.16);
+    let mainBase = 10;
+    if (slot === 'weapon') {
+      mainBase = Math.max(5, Math.round(9 * stagePow * rInfo.mainMult * variance));
+    } else if (slot === 'armor') {
+      mainBase = Math.max(30, Math.round(55 * stagePow * rInfo.mainMult * variance));
+    } else {
+      const rawCrit = (14 + (stage - 1) * 6 + Math.pow(stage, 1.32)) * rInfo.mainMult * variance;
+      mainBase = Math.max(10, Math.round(rawCrit));
+    }
+
+    const subCount = isStarter ? 2 : randInt(rInfo.minSub, rInfo.maxSub);
+    const shuffledSubs = [...SUB_POOL].sort(() => Math.random() - 0.5);
+    const chosenDefs = shuffledSubs.slice(0, Math.min(subCount, SUB_POOL.length));
+    while (chosenDefs.length < subCount) {
+      chosenDefs.push(SUB_POOL[randInt(0, SUB_POOL.length - 1)]);
+    }
+
+    const subStats = chosenDefs.map(subDef => {
+      const sMult = 1 + (stage - 1) * subDef.stageScale;
+      const val = +(rand(subDef.min, subDef.max) * rInfo.subMult * (isStarter ? 0.7 : sMult)).toFixed(1);
+      return {
+        key: subDef.key,
+        val: val,
+        boosts: 0
+      };
+    });
+
+    return {
+      id: uid(),
+      slot,
+      name,
+      icon: isStarter ? slotInfo.icon : baseChoice.icon,
+      rarity,
+      stage,
+      level: 0,
+      locked: false,
+      spentStones: 0,
+      createdAt: Date.now(),
+      mainStat: {
+        type: slotInfo.mainType,
+        base: mainBase
+      },
+      subStats
+    };
+  }
+
+  function getMainStatVal(item) {
+    if (!item) return 0;
+    return Math.round(item.mainStat.base * (1 + item.level * 0.12));
+  }
+
+  function getUpgradeCost(item) {
+    return Math.max(2, Math.round((3 + item.stage * 1.4) * (1 + item.level * 0.48) * (1 + item.rarity * 0.35)));
+  }
+
+  function getSalvageValue(item) {
+    const rInfo = RARITIES[item.rarity];
+    const baseDust = rInfo.dustBase + Math.round(item.stage * (1.2 + item.rarity * 1.6));
+    const refund = Math.round((item.spentStones || 0) * 0.6);
+    return baseDust + refund;
+  }
+
+  function calcHeroStats(equipSet, applyFloorBuff = false) {
+    let flatAtk = HERO_BASE.atk;
+    let flatHp = HERO_BASE.hp;
+    let critRate = HERO_BASE.critRate;
+    let critDmg = HERO_BASE.critDmg;
+    let atkPct = 0;
+    let aspdPct = 0;
+    let mythicCount = 0;
+
+    for (const key of ['weapon', 'armor', 'accessory']) {
+      const it = equipSet[key];
+      if (!it) continue;
+      if (it.rarity === 4) mythicCount++;
+      const mVal = getMainStatVal(it);
+      if (it.mainStat.type === 'atk') flatAtk += mVal;
+      else if (it.mainStat.type === 'hp') flatHp += mVal;
+      else if (it.mainStat.type === 'critDmg') critDmg += mVal;
+
+      for (const sub of it.subStats) {
+        if (sub.key === 'atkPct') atkPct += sub.val;
+        else if (sub.key === 'critRate') critRate += sub.val;
+        else if (sub.key === 'critDmg') critDmg += sub.val;
+        else if (sub.key === 'aspd') aspdPct += sub.val;
+      }
+    }
+
+    let totalAtk = Math.max(1, flatAtk * (1 + atkPct / 100));
+    const totalHp = Math.max(10, flatHp);
+
+    const maxCritCap = state.cleared100 ? 300 : 100;
+    const finalCritRate = clamp(critRate, 0, maxCritCap);
+    const finalCritDmg = Math.max(100, critDmg);
+    let totalAspd = clamp(HERO_BASE.aspd * (1 + aspdPct / 100), 0.2, 8.0);
+
+    if (applyFloorBuff) {
+      if (crawler.floorBuff === 'atk') totalAtk *= 1.5;
+      if (crawler.floorBuff === 'aspd') totalAspd = Math.min(10.0, totalAspd * 1.5);
+    }
+
+    const c = finalCritDmg / 100;
+    let critExpectedMult = 1;
+    if (finalCritRate <= 100) {
+      critExpectedMult = 1 + (finalCritRate / 100) * (c - 1);
+    } else if (finalCritRate <= 200) {
+      critExpectedMult = c * (1 + ((finalCritRate - 100) / 100) * 2);
+    } else {
+      critExpectedMult = c * (3 + (Math.min(finalCritRate - 200, 100) / 100) * 5);
+    }
+
+    const hitMult = 1 + mythicCount * 0.50;
+    const avgHit = totalAtk * critExpectedMult * hitMult;
+    const dps = avgHit * totalAspd;
+
+    return {
+      atk: totalAtk,
+      hp: totalHp,
+      critRate: finalCritRate,
+      critDmg: finalCritDmg,
+      aspd: totalAspd,
+      mythicCount,
+      avgHit,
+      dps
+    };
+  }
+
+  function calcDpsDiffPct(candidateItem) {
+    if (!candidateItem) return 0;
+    const curStats = calcHeroStats(state.equipped, false);
+    const currentEq = state.equipped[candidateItem.slot];
+    if (currentEq && currentEq.id === candidateItem.id) return 0;
+
+    const testSet = { ...state.equipped, [candidateItem.slot]: candidateItem };
+    const nextStats = calcHeroStats(testSet, false);
+    if (curStats.dps <= 0) return 0;
+    return ((nextStats.dps - curStats.dps) / curStats.dps) * 100;
+  }
+
+  function formatDpsDiffHtml(diffPct) {
+    if (Math.abs(diffPct) < 0.05) {
+      return `<span class="dps-diff dps-same">±0.0%</span>`;
+    }
+    if (diffPct > 0) {
+      const txt = diffPct >= 1000 ? `+${Math.round(diffPct)}%` : `+${diffPct.toFixed(1)}%`;
+      return `<span class="dps-diff dps-up">▲ ${txt}</span>`;
+    } else {
+      return `<span class="dps-diff dps-down">▼ ${diffPct.toFixed(1)}%</span>`;
+    }
+  }
+
+  function rarityNameHtml(item, textOverride = null) {
+    const r = RARITIES[item.rarity];
+    const txt = escapeHtml(textOverride ?? item.name);
+    if (item.rarity === 4) {
+      return `<span class="mythic-text">${txt}</span>`;
+    }
+    return `<span style="color:${r.color};">${txt}</span>`;
+  }
+
+  // =========================================================
+  // ステージ & 敵ロジック
+  // =========================================================
+  function getBiome(stage) {
+    const idx = Math.floor((stage - 1) / 3) % BIOMES.length;
+    return BIOMES[idx];
+  }
+
+  function createEnemy(stage, wave) {
+    const biome = getBiome(stage);
+    const isBoss = wave === 5;
+    const isGreatDemon = isBoss && (stage % 100 === 0);
+    const isMidBoss = isBoss && !isGreatDemon && (stage % 10 === 0);
+    const isRareEscape = !isBoss && Math.random() < 0.12;
+
+    const mult = Math.pow(1.28, stage - 1);
+    const atkMult = Math.pow(1.255, stage - 1);
+
+    if (isRareEscape) {
+      return {
+        name: '👑 はぐれ黄金スライム',
+        icon: '✨',
+        isBoss: false,
+        isMidBoss: false,
+        isGreatDemon: false,
+        isRareEscape: true,
+        maxHp: Math.round(75 * mult),
+        hp: Math.round(75 * mult),
+        atk: Math.max(1, Math.round(4 * atkMult)),
+        atkInterval: 1.8
+      };
+    }
+
+    if (isGreatDemon) {
+      const name = stage === 100 ? '【大魔王】深淵の大魔王' : `【覇王 ${stage}F】創世の魔王`;
+      const maxHp = Math.round(220 * mult);
+      return {
+        name,
+        icon: '😈',
+        isBoss: true,
+        isMidBoss: false,
+        isGreatDemon: true,
+        isRareEscape: false,
+        maxHp,
+        hp: maxHp,
+        atk: Math.max(1, Math.round(10.5 * atkMult)),
+        atkInterval: 1.35
+      };
+    }
+
+    const tpl = isBoss ? biome.boss : biome.mobs[randInt(0, biome.mobs.length - 1)];
+    const bossHpScale = isMidBoss ? 165 : isBoss ? 128 : 48;
+    const maxHp = Math.round(bossHpScale * mult);
+    const atk = Math.max(1, Math.round((isMidBoss ? 9.5 : isBoss ? 8.5 : 5.5) * atkMult));
+
+    return {
+      name: isMidBoss ? `【守護者】${tpl.name}` : isBoss ? `【BOSS】${tpl.name}` : tpl.name,
+      icon: tpl.icon,
+      isBoss,
+      isMidBoss,
+      isGreatDemon: false,
+      isRareEscape: false,
+      maxHp,
+      hp: maxHp,
+      atk,
+      atkInterval: isBoss ? 1.45 : 1.65
+    };
+  }
+
+  function applyBiomeVisuals() {
+    const biome = getBiome(state.stage);
+    const palIdx = Math.floor((state.stage - 1) / 100) % FLOOR_PALETTES.length;
+    crawler.palette = FLOOR_PALETTES[palIdx];
+    const palTag = state.stage >= 101 ? ` [${crawler.palette.name}]` : '';
+    document.getElementById('biome-name').textContent = biome.name + palTag;
+  }
+
+  function spawnCurrentWaveEnemy() {
+    battle.enemy = createEnemy(state.stage, state.wave);
+    placeWaveEnemy();
+    updateWavePills();
+  }
+
+  function updateWavePills() {
+    const container = document.getElementById('wave-pills');
+    let html = '';
+    for (let w = 1; w <= 5; w++) {
+      let cls = 'wave-dot';
+      if (w === 5) cls += ' boss';
+      if (w < state.wave) cls += ' done';
+      else if (w === state.wave) cls += ' current';
+      html += `<span class="${cls}" title="${w === 5 ? 'ボス戦' : 'Wave ' + w}"></span>`;
+    }
+    container.innerHTML = html;
+    document.getElementById('stage-hud-num').textContent = `St.${state.stage}`;
+  }
+
+  // =========================================================
+  // 戦闘・ドロップ・ガチャ演出
+  // =========================================================
+  function spawnFloatText(xPct, yPct, text, cls) {
+    const layer = document.getElementById('fx-layer');
+    const el = document.createElement('div');
+    el.className = `float-text ${cls}`;
+    el.textContent = text;
+    el.style.left = (xPct + rand(-4, 4)) + '%';
+    el.style.top = yPct + '%';
+    layer.appendChild(el);
+    setTimeout(() => el.remove(), 1250);
+  }
+
+  function spawnSlashFx(xPct, yPct) {
+    const layer = document.getElementById('fx-layer');
+    const el = document.createElement('div');
+    el.className = 'slash-fx';
+    el.style.left = xPct + '%';
+    el.style.top = yPct + '%';
+    layer.appendChild(el);
+    setTimeout(() => el.remove(), 220);
+  }
+
+  function triggerFrameFlash(rarityId) {
+    const frame = document.getElementById('view-frame');
+    frame.classList.remove('flash-legend', 'flash-mythic');
+    void frame.offsetWidth;
+    if (rarityId >= 4) frame.classList.add('flash-mythic');
+    else if (rarityId === 3) frame.classList.add('flash-legend');
+  }
+
+  function showLootBanner(text, borderColor = '#fbbf24', isMythic = false) {
+    const el = document.getElementById('loot-banner');
+    clearTimeout(uiState.lootBannerTimer);
+    clearTimeout(uiState.lootPromoteTimer);
+    el.classList.remove('shaking', 'mythic-text');
+    el.style.borderColor = borderColor;
+    el.innerHTML = escapeHtml(text);
+    if (isMythic) {
+      el.style.background = 'linear-gradient(90deg, rgba(131,24,67,0.94), rgba(30,58,138,0.94))';
+    } else {
+      el.style.background = 'rgba(15, 23, 42, 0.94)';
+    }
+    el.classList.add('show');
+    uiState.lootBannerTimer = setTimeout(() => {
+      el.classList.remove('show');
+    }, 2600);
+  }
+
+  function showPromoteLootBanner(item) {
+    const rInfo = RARITIES[item.rarity];
+    const el = document.getElementById('loot-banner');
+    clearTimeout(uiState.lootBannerTimer);
+    clearTimeout(uiState.lootPromoteTimer);
+
+    if (Math.random() < 0.38) {
+      const fakeR = item.rarity === 4 ? RARITIES[2] : RARITIES[1];
+      el.classList.remove('shaking');
+      el.style.borderColor = fakeR.color;
+      el.style.background = 'rgba(15, 23, 42, 0.94)';
+      el.textContent = `${item.icon} [${fakeR.name}] ${item.name}…？`;
+      el.classList.add('show', 'shaking');
+
+      uiState.lootPromoteTimer = setTimeout(() => {
+        el.classList.remove('shaking');
+        triggerFrameFlash(item.rarity);
+        playSfx(item.rarity >= 4 ? 'mythic' : 'legend');
+        el.style.borderColor = rInfo.color;
+        if (item.rarity >= 4) {
+          el.style.background = 'linear-gradient(90deg, rgba(131,24,67,0.95), rgba(30,58,138,0.95))';
+          el.innerHTML = `✨ 昇格覚醒!! <span class="mythic-text">[${rInfo.name}] ${escapeHtml(item.name)}</span> ✨`;
+        } else {
+          el.innerHTML = `✨ 昇格!! <span style="color:${rInfo.color};">[${rInfo.name}] ${escapeHtml(item.name)}</span> ✨`;
+        }
+        uiState.lootBannerTimer = setTimeout(() => el.classList.remove('show'), 2600);
+      }, 480);
+    } else {
+      triggerFrameFlash(item.rarity);
+      playSfx(item.rarity >= 4 ? 'mythic' : 'legend');
+      showLootBanner(
+        item.rarity >= 4
+          ? `🌈 MYTHIC DROP!! ${item.icon} ${item.name}`
+          : `👑 LEGENDARY!! ${item.icon} ${item.name}`,
+        rInfo.color,
+        item.rarity >= 4
+      );
+    }
+  }
+
+  function addLog(msg, color = null) {
+    const t = new Date();
+    const ts = `${String(t.getHours()).padStart(2, '0')}:${String(t.getMinutes()).padStart(2, '0')}`;
+    state.logs.unshift({ ts, msg, color });
+    if (state.logs.length > 30) state.logs.length = 30;
+    renderLogs();
+  }
+
+  function renderLogs() {
+    const box = document.getElementById('log-box');
+    box.innerHTML = state.logs.map(l => {
+      if (typeof l === 'string') return `<div class="log-entry">${escapeHtml(l)}</div>`;
+      const style = l.color ? `style="color:${l.color}"` : '';
+      return `<div class="log-entry" ${style}>[${l.ts}] ${escapeHtml(l.msg)}</div>`;
+    }).join('');
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, m => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[m]));
+  }
+
+  function handleEnemyDefeated() {
+    const enemy = battle.enemy;
+    const isBoss = enemy.isBoss;
+    state.kills += 1;
+
+    const stoneScale = enemy.isRareEscape ? 5.0 : enemy.isGreatDemon ? 8.0 : enemy.isMidBoss ? 2.5 : isBoss ? 2.0 : 1.0;
+    const stoneGain = Math.max(1, Math.round((1.4 + state.stage * 0.58) * stoneScale + rand(0, 1.5)));
+    state.stones += stoneGain;
+    spawnFloatText(battle.enemyX, 42, `+${fmt(stoneGain)} 💎`, 'float-loot');
+
+    if (enemy.isRareEscape) {
+      state.chests += 1;
+      addLog(`👑 はぐれ撃破！ +${fmt(stoneGain)}💎 & 📦宝箱+1！`, '#fde047');
+      const rareItem = generateItem(state.stage, Math.random() < (state.cleared100 ? 0.08 : 0) ? 4 : Math.random() < 0.35 ? 3 : 2, null, false, true);
+      processItemDrop(rareItem);
+    } else if (enemy.isGreatDemon) {
+      state.chests += 5;
+      state.mythicChests += 1;
+      addLog(`😈 覇王撃破！ 📦宝箱+5 & 🌈虹の宝箱+1！`, '#f472b6');
+      triggerFrameFlash(4);
+      playSfx('mythic');
+      if (state.stage >= 100 && !state.cleared100) {
+        state.cleared100 = true;
+        showLootBanner('👑 100階「大魔王」討伐！裏世界＆虹装備解禁！', '#f472b6', true);
+        document.getElementById('milestone-modal').classList.add('open');
+      } else {
+        showLootBanner(`🌈 ${state.stage}F大魔王撃破！虹の宝箱×1 獲得！`, '#f472b6', true);
+      }
+    } else if (enemy.isMidBoss) {
+      state.chests += 2;
+      addLog(`守護者撃破！ 📦封印の宝箱+2`, '#c084fc');
+    } else if (isBoss) {
+      state.chests += 1;
+    }
+
+    if (!enemy.isRareEscape) {
+      const buffMult = crawler.floorBuff === 'drop' ? 2.0 : 1.0;
+      const dropChance = Math.min(1.0, (isBoss ? 0.78 : 0.28) * buffMult);
+      if (Math.random() < dropChance) {
+        const dropped = generateItem(state.stage, null, null, false, isBoss);
+        processItemDrop(dropped);
+      }
+    }
+
+    const heroStats = calcHeroStats(state.equipped, true);
+    battle.heroHp = Math.min(heroStats.hp, battle.heroHp + heroStats.hp * 0.20);
+
+    if (isBoss) {
+      if (!enemy.isGreatDemon) addLog(`ステージ${state.stage} ボス撃破！ (📦+1)`, '#fbbf24');
+      if (state.stage >= state.maxStage) {
+        state.maxStage = state.stage + 1;
+      }
+      if (state.autoProgress) {
+        state.stage += 1;
+        state.wave = 1;
+        applyBiomeVisuals();
+      } else {
+        state.wave = 1;
+      }
+      battle.needNewFloor = true;
+    } else {
+      state.wave += 1;
+    }
+
+    if (crawler.enemyCell) {
+      crawler.dying = { icon: enemy.icon, wx: crawler.enemyCell.x + 0.5, wy: crawler.enemyCell.y + 0.5, t: 0.55 };
+    }
+    battle.mode = 'TRANSITION';
+    battle.transTimer = 0.55;
+
+    updateStripUI();
+    if (uiState.drawerOpen) renderDrawer(false);
+  }
+
+  function processItemDrop(item, silent = false) {
+    const rInfo = RARITIES[item.rarity];
+    if (item.rarity <= state.autoSalvageRarity) {
+      const dust = getSalvageValue(item);
+      state.stones += dust;
+      if (!silent) {
+        addLog(`自動分解: ${item.name} (+${dust}💎)`, rInfo.color);
+      }
+      return { action: 'auto_salvaged', dust };
+    }
+
+    if (state.inventory.length >= MAX_BAG_SIZE) {
+      const dust = getSalvageValue(item);
+      state.stones += dust;
+      if (!silent) {
+        addLog(`バッグ満杯で分解: ${item.name} (+${dust}💎)`, rInfo.color);
+      }
+      return { action: 'overflow_salvaged', dust };
+    }
+
+    state.inventory.unshift(item);
+    if (!silent) {
+      if (item.rarity >= 3) {
+        showPromoteLootBanner(item);
+      } else {
+        playSfx('drop');
+        spawnFloatText(battle.enemyX, 26, `${item.icon} ${rInfo.name}!`, 'float-loot');
+      }
+      addLog(`入手: [${rInfo.name}] ${item.name} (St.${item.stage})`, rInfo.color);
+    }
+    return { action: 'added', item };
+  }
+
+  function updateHeroHpBar() {
+    const stats = calcHeroStats(state.equipped, true);
+    const pct = clamp((battle.heroHp / stats.hp) * 100, 0, 100);
+    document.getElementById('hero-hp-bar').style.width = pct + '%';
+    document.getElementById('hero-hp-text').textContent = `HP ${fmt(battle.heroHp)} / ${fmt(stats.hp)}`;
+  }
+
+  function showBanner(text) {
+    const b = document.getElementById('battle-banner');
+    b.textContent = text;
+    b.classList.add('show');
+    setTimeout(() => b.classList.remove('show'), 1300);
+  }
+
+  // メインゲームループ
+  let lastFrameTime = performance.now();
+  let autoSaveTimer = 0;
+
+  function tick(now) {
+    const rawDt = (now - lastFrameTime) / 1000;
+    lastFrameTime = now;
+
+    if (rawDt > 8.0) {
+      if (!crawler.paused) applyOfflineGains(rawDt, false);
+    } else {
+      const dt = Math.min(rawDt, 0.15);
+      if (!crawler.paused) stepBattle(dt);
+    }
+    renderCrawler();
+
+    autoSaveTimer += Math.min(rawDt, 1.0);
+    if (autoSaveTimer >= 5.0) {
+      autoSaveTimer = 0;
+      saveGame();
+    }
+
+    requestAnimationFrame(tick);
+  }
+
+  function rollSingleHitDamage(stats, multFactor) {
+    const baseAtk = stats.atk * multFactor;
+    const c = stats.critDmg / 100;
+    let tier = 0;
+
+    if (stats.critRate <= 100) {
+      if (Math.random() * 100 < stats.critRate) tier = 1;
+    } else if (stats.critRate <= 200) {
+      tier = (Math.random() * 100 < (stats.critRate - 100)) ? 2 : 1;
+    } else {
+      tier = (Math.random() * 100 < Math.min(100, stats.critRate - 200)) ? 3 : 2;
+    }
+
+    let tierMult = 1;
+    if (tier === 1) tierMult = c;
+    else if (tier === 2) tierMult = c * 3;
+    else if (tier === 3) tierMult = c * 8;
+
+    const dmg = Math.max(1, Math.round(baseAtk * tierMult * rand(0.95, 1.05)));
+    return { dmg, tier };
+  }
+
+  function stepBattle(rawDt) {
+    const stats = calcHeroStats(state.equipped, true);
+    const combatDt = rawDt * crawler.speed;
+
+    if (battle.mode === 'WALKING') {
+      if (battle.heroHp < stats.hp) {
+        battle.heroHp = Math.min(stats.hp, battle.heroHp + stats.hp * 0.12 * combatDt);
+      }
+      crawlWalk(rawDt);
+    }
+    else if (battle.mode === 'FIGHTING') {
+      if (battle.heroHp < stats.hp) {
+        battle.heroHp = Math.min(stats.hp, battle.heroHp + stats.hp * 0.02 * combatDt);
+      }
+
+      if (battle.enemy.isRareEscape) {
+        battle.rareEscapeTimer -= combatDt;
+        if (battle.rareEscapeTimer <= 0) {
+          addLog('💨 はぐれ黄金スライムは逃げ出した…', '#94a3b8');
+          showBanner('💨 逃げられた！（ペナルティなし）');
+          state.wave += 1;
+          battle.mode = 'TRANSITION';
+          battle.transTimer = 0.4;
+          updateStripUI();
+          return;
+        }
+      }
+
+      battle.heroAtkTimer += combatDt;
+      const atkInterval = 1 / stats.aspd;
+      let swings = 0;
+      while (battle.heroAtkTimer >= atkInterval && swings < 10) {
+        battle.heroAtkTimer -= atkInterval;
+        swings++;
+
+        const totalHits = 1 + stats.mythicCount;
+        let totalDmgThisSwing = 0;
+        let maxTier = 0;
+
+        for (let hIdx = 0; hIdx < totalHits; hIdx++) {
+          const factor = hIdx === 0 ? 1.0 : 0.50;
+          const res = rollSingleHitDamage(stats, factor);
+          totalDmgThisSwing += res.dmg;
+          if (res.tier > maxTier) maxTier = res.tier;
+
+          if (res.dmg > state.maxDmg) {
+            state.maxDmg = res.dmg;
+            document.getElementById('hud-max-dmg').textContent = `最大: ${fmt(state.maxDmg)}`;
+          }
+
+          const delayMs = hIdx * 65;
+          const yPos = 34 - hIdx * 5;
+          const label =
+            res.tier === 3 ? `🌈極${fmt(res.dmg)}!!!` :
+            res.tier === 2 ? `🔥超${fmt(res.dmg)}!!` :
+            res.tier === 1 ? `⚡${fmt(res.dmg)}!` : fmt(res.dmg);
+          const cls =
+            res.tier === 3 ? 'float-hyper-crit' :
+            res.tier === 2 ? 'float-super-crit' :
+            res.tier === 1 ? 'float-crit' : 'float-dmg';
+
+          if (delayMs === 0) {
+            spawnFloatText(battle.enemyX, yPos, label, cls);
+          } else {
+            setTimeout(() => spawnFloatText(battle.enemyX, yPos, label, cls), delayMs);
+          }
+        }
+
+        battle.enemy.hp -= totalDmgThisSwing;
+        crawler.enemyShake = 0.18;
+        spawnSlashFx(battle.enemyX, 52);
+        playSfx(maxTier >= 1 ? 'crit' : 'hit');
+
+        if (battle.enemy.hp <= 0) {
+          battle.enemy.hp = 0;
+          handleEnemyDefeated();
+          return;
+        }
+      }
+      if (swings >= 10) battle.heroAtkTimer = Math.min(battle.heroAtkTimer, atkInterval);
+
+      battle.enemyAtkTimer += combatDt;
+      let eSwings = 0;
+      while (battle.enemyAtkTimer >= battle.enemy.atkInterval && eSwings < 5) {
+        battle.enemyAtkTimer -= battle.enemy.atkInterval;
+        eSwings++;
+        const eDmg = Math.max(1, Math.round(battle.enemy.atk * rand(0.9, 1.1)));
+        battle.heroHp -= eDmg;
+
+        spawnFloatText(battle.heroX, 78, `-${fmt(eDmg)}`, 'float-hero-dmg');
+
+        if (battle.heroHp <= 0) {
+          battle.heroHp = 0;
+          battle.mode = 'RECOVERING';
+          battle.recoverTimer = 1.1;
+          if (state.stage > 1) {
+            state.stage -= 1;
+            state.wave = 1;
+            showBanner(`撤退！ステージ${state.stage}で態勢を立て直す`);
+            addLog(`敗北によりステージ${state.stage}へ撤退しました`, '#f87171');
+            applyBiomeVisuals();
+          } else {
+            state.wave = 1;
+            showBanner('体勢を立て直した！');
+          }
+          updateStripUI();
+          break;
+        }
+      }
+    }
+    else if (battle.mode === 'TRANSITION') {
+      battle.transTimer -= combatDt;
+      if (battle.transTimer <= 0) {
+        if (state.stage !== crawler.floorStage || battle.needNewFloor) {
+          battle.needNewFloor = false;
+          enterFloor();
+        } else {
+          spawnCurrentWaveEnemy();
+        }
+        battle.mode = 'WALKING';
+      }
+    }
+    else if (battle.mode === 'RECOVERING') {
+      battle.recoverTimer -= combatDt;
+      if (battle.recoverTimer <= 0) {
+        battle.heroHp = stats.hp;
+        enterFloor();
+        battle.mode = 'WALKING';
+      }
+    }
+
+    updateHeroHpBar();
+  }
+
+  // =========================================================
+  // オフライン放置収益計算
+  // =========================================================
+  function applyOfflineGains(elapsedSec, showModal = true) {
+    const cappedSec = clamp(elapsedSec, 0, MAX_OFFLINE_SEC);
+    if (cappedSec < 10) return;
+
+    const stats = calcHeroStats(state.equipped, false);
+    const enemySample = createEnemy(state.stage, 2);
+    const bossSample = createEnemy(state.stage, 5);
+
+    const avgHp = (enemySample.maxHp * 4 + bossSample.maxHp) / 5;
+    const avgKillTime = Math.max(2.2, 1.8 + avgHp / Math.max(1, stats.dps));
+
+    const avgEnemyDps = enemySample.atk / enemySample.atkInterval;
+    const surviveTime = stats.hp / Math.max(0.1, avgEnemyDps);
+    const efficiency = surviveTime < (avgHp / Math.max(1, stats.dps)) ? 0.5 : 1.0;
+
+    const kills = Math.max(1, Math.floor((cappedSec / avgKillTime) * efficiency));
+    state.kills += kills;
+
+    let gainedStones = 0;
+    let gainedChests = 0;
+    const gainedItems = [];
+
+    const rollLimit = Math.min(kills, 3000);
+    const scaleFactor = kills / rollLimit;
+
+    for (let i = 0; i < rollLimit; i++) {
+      const isBoss = (i % 5 === 4);
+      gainedStones += Math.round((isBoss ? 2.8 : 1.4) + state.stage * (isBoss ? 1.2 : 0.58));
+      if (isBoss) gainedChests += 1;
+      if (Math.random() < (isBoss ? 0.78 : 0.28)) {
+        const it = generateItem(state.stage, null, null, false, isBoss);
+        gainedItems.push(it);
+      }
+    }
+    if (scaleFactor > 1) {
+      gainedStones = Math.round(gainedStones * scaleFactor);
+      gainedChests = Math.round(gainedChests * scaleFactor);
+    }
+
+    gainedItems.sort((a, b) => (b.rarity - a.rarity) || (calcDpsDiffPct(b) - calcDpsDiffPct(a)));
+
+    const keptItems = [];
+    const freeSlots = Math.max(0, MAX_BAG_SIZE - state.inventory.length);
+    for (const it of gainedItems) {
+      if (it.rarity <= state.autoSalvageRarity || keptItems.length >= freeSlots) {
+        gainedStones += getSalvageValue(it);
+      } else {
+        keptItems.push(it);
+      }
+    }
+    // 高レアが「新着順」の先頭に並ぶように逆順で unshift
+    for (let i = keptItems.length - 1; i >= 0; i--) {
+      state.inventory.unshift(keptItems[i]);
+    }
+
+    state.stones += gainedStones;
+    state.chests += gainedChests;
+    addLog(`放置収益: ${kills}体討伐 / +${fmt(gainedStones)}💎 / 装備${keptItems.length} / 箱+${gainedChests}`, '#38bdf8');
+    updateStripUI();
+    if (uiState.drawerOpen) renderDrawer(false);
+    saveGame();
+
+    if (showModal) {
+      const hrs = Math.floor(cappedSec / 3600);
+      const mins = Math.floor((cappedSec % 3600) / 60);
+      const secs = Math.floor(cappedSec % 60);
+      const timeStr = (hrs > 0 ? `${hrs}時間 ` : '') + (mins > 0 ? `${mins}分 ` : '') + `${secs}秒`;
+
+      document.getElementById('off-duration').textContent = timeStr;
+      document.getElementById('off-kills').textContent = `${fmt(kills)} 体`;
+      document.getElementById('off-stones').textContent = `+${fmt(gainedStones)} 💎`;
+      document.getElementById('off-items').textContent = `${keptItems.length}個 / 📦+${gainedChests}`;
+
+      const listEl = document.getElementById('offline-loot-list');
+      if (keptItems.length === 0) {
+        listEl.innerHTML = `<div style="color:var(--text-muted);text-align:center;">バッグに入った装備はありません（自動分解/満杯分は強化石に変換されました）</div>`;
+      } else {
+        listEl.innerHTML = keptItems.slice(0, 30).map(it => {
+          const r = RARITIES[it.rarity];
+          return `<div style="color:${r.color};">${it.icon} [${r.name}] ${escapeHtml(it.name)} (St.${it.stage})</div>`;
+        }).join('') + (keptItems.length > 30 ? `<div style="color:var(--text-muted);">…ほか ${keptItems.length - 30} 個</div>` : '');
+      }
+
+      document.getElementById('offline-modal').classList.add('open');
+    }
+  }
+
+  // =========================================================
+  // UIレンダリング（ストリップ＆ドロワー）
+  // =========================================================
+  function hasBetterEquipment() {
+    return state.inventory.some(it => calcDpsDiffPct(it) > 0.1);
+  }
+
+  function updateStripUI() {
+    const stats = calcHeroStats(state.equipped, true);
+    document.getElementById('st-atk').textContent = fmt(stats.atk);
+    document.getElementById('st-hp').textContent = fmt(stats.hp);
+    document.getElementById('st-dps').textContent = fmt(stats.dps) + (stats.mythicCount > 0 ? ` (${1 + stats.mythicCount}連)` : '');
+    document.getElementById('hud-dps').textContent = `DPS ${fmt(stats.dps)}`;
+    document.getElementById('hud-max-dmg').textContent = `最大: ${fmt(state.maxDmg)}`;
+
+    const critEl = document.getElementById('st-crit');
+    if (stats.critRate > 200) {
+      critEl.innerHTML = `<span class="mythic-text">${stats.critRate.toFixed(1)}% (極)</span>`;
+    } else if (stats.critRate > 100) {
+      critEl.innerHTML = `<span style="color:var(--red);">${stats.critRate.toFixed(1)}% (超)</span>`;
+    } else {
+      critEl.textContent = `${stats.critRate.toFixed(1)}%`;
+    }
+
+    document.getElementById('st-cdmg').textContent = `${Math.round(stats.critDmg)}%`;
+    document.getElementById('st-aspd').textContent = `${stats.aspd.toFixed(2)}/s`;
+    document.getElementById('kill-counter').textContent = `討伐: ${fmt(state.kills)}`;
+
+    document.getElementById('hud-title-chip').style.display = state.cleared100 ? 'inline-block' : 'none';
+    const buffEl = document.getElementById('hud-buff-chip');
+    if (crawler.floorBuff) {
+      buffEl.style.display = 'inline-block';
+      buffEl.textContent = crawler.floorBuff === 'atk' ? '🔮 攻撃1.5x' : crawler.floorBuff === 'aspd' ? '🔮 速度1.5x' : '🔮 Drop2x';
+    } else {
+      buffEl.style.display = 'none';
+    }
+    updateMapPosition();
+
+    document.getElementById('stone-count').textContent = fmt(state.stones);
+    document.getElementById('stage-box-label').textContent =
+      `St.${state.stage} / ${state.maxStage} ${['⚔️武器','🛡️防具','💍アクセ'][(state.stage - 1) % 3]}UP`;
+    document.getElementById('btn-stage-prev').disabled = state.stage <= 1;
+    document.getElementById('btn-stage-next').disabled = state.stage >= state.maxStage;
+
+    const autoBtn = document.getElementById('btn-auto-prog');
+    autoBtn.classList.toggle('active', state.autoProgress);
+    autoBtn.textContent = state.autoProgress ? '自動進行 ON' : '自動進行 OFF';
+
+    document.getElementById('bag-count-label').textContent = `(${state.inventory.length}/${MAX_BAG_SIZE})`;
+    document.getElementById('upgrade-avail-badge').style.display = hasBetterEquipment() ? 'inline-block' : 'none';
+
+    const totalChests = state.chests + state.mythicChests;
+    const chestBtn = document.getElementById('btn-open-chest');
+    document.getElementById('chest-count-badge').textContent = state.mythicChests > 0 ? `${state.chests}+🌈${state.mythicChests}` : String(state.chests);
+    chestBtn.classList.toggle('btn-chest-ready', totalChests > 0);
+    if (document.getElementById('chest-modal').classList.contains('open')) {
+      updateChestModalHeader();
+    }
+
+    document.getElementById('select-auto-salvage').value = String(state.autoSalvageRarity);
+    document.getElementById('btn-sound').textContent = state.soundOn ? '🔊' : '🔇';
+
+    const row = document.getElementById('mini-equipped-row');
+    row.innerHTML = ['weapon', 'armor', 'accessory'].map(slotKey => {
+      const it = state.equipped[slotKey];
+      const sInfo = SLOTS[slotKey];
+      if (!it) {
+        return `<div class="eq-mini-slot" data-open-slot="${slotKey}"><div class="eq-mini-icon">${sInfo.icon}</div><div class="eq-mini-info"><div class="eq-mini-name">未装備</div></div></div>`;
+      }
+      const rInfo = RARITIES[it.rarity];
+      const lvTxt = it.level > 0 ? `+${it.level}` : '';
+      return `
+        <div class="eq-mini-slot" data-open-slot="${slotKey}" style="border-color:${rInfo.border};background:${rInfo.bg};">
+          <div class="eq-mini-icon">${it.icon}</div>
+          <div class="eq-mini-info">
+            <div class="eq-mini-name">${rarityNameHtml(it, it.name + (lvTxt ? ' ' + lvTxt : ''))}</div>
+            <div class="eq-mini-sub">${sInfo.mainLabel} +${fmt(getMainStatVal(it))}${sInfo.unit}</div>
+          </div>
+        </div>`;
+    }).join('');
+
+    row.querySelectorAll('.eq-mini-slot').forEach(el => {
+      el.addEventListener('click', () => {
+        const sk = el.getAttribute('data-open-slot');
+        const eq = state.equipped[sk];
+        if (eq) uiState.selectedItemId = eq.id;
+        uiState.filterSlot = sk;
+        openDrawer();
+      });
+    });
+
+    updateWavePills();
+  }
+
+  function findItemById(id) {
+    if (!id) return null;
+    for (const k of ['weapon', 'armor', 'accessory']) {
+      if (state.equipped[k] && state.equipped[k].id === id) {
+        return { item: state.equipped[k], isEquipped: true };
+      }
+    }
+    const found = state.inventory.find(i => i.id === id);
+    return found ? { item: found, isEquipped: false } : null;
+  }
+
+  function refreshDetailUpgradeButton() {
+    const btn = document.getElementById('btn-detail-upgrade');
+    if (!btn) return;
+    const found = findItemById(uiState.selectedItemId);
+    if (!found) return;
+    const item = found.item;
+    const rInfo = RARITIES[item.rarity];
+    const upgCost = getUpgradeCost(item);
+    const isMaxLv = item.level >= rInfo.maxLv;
+    const canAfford = state.stones >= upgCost;
+    btn.disabled = isMaxLv || !canAfford || uiState.isRollingUpgrade;
+  }
+
+  function renderDrawer(refreshDetail = true) {
+    if (!uiState.drawerOpen) return;
+
+    const stats = calcHeroStats(state.equipped, false);
+    document.getElementById('drawer-stone-count').textContent = fmt(state.stones);
+    document.getElementById('drawer-cur-dps').textContent = fmt(stats.dps);
+
+    document.querySelectorAll('#slot-filter-tabs .tab-btn').forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.filter === uiState.filterSlot);
+    });
+
+    const eqListEl = document.getElementById('drawer-equipped-list');
+    eqListEl.innerHTML = ['weapon', 'armor', 'accessory'].map(slotKey => {
+      const it = state.equipped[slotKey];
+      const sInfo = SLOTS[slotKey];
+      if (!it) return `<div class="eq-full-card">${sInfo.label}: なし</div>`;
+      const rInfo = RARITIES[it.rarity];
+      const sel = uiState.selectedItemId === it.id ? 'selected' : '';
+      return `
+        <div class="eq-full-card ${sel}" data-select-id="${it.id}" style="border-left-color:${rInfo.color};background:${rInfo.bg};">
+          <div style="display:flex;align-items:center;justify-content:space-between;">
+            <span style="font-weight:700;font-size:12px;">${it.icon} ${rarityNameHtml(it)} ${it.level > 0 ? `<span style="color:var(--gold);">+${it.level}</span>` : ''}</span>
+            <span style="font-size:10px;color:var(--text-muted);">${it.locked ? '🔒' : ''} St.${it.stage}</span>
+          </div>
+          <div style="font-size:11px;margin-top:3px;color:var(--text-main);">
+            ${sInfo.mainLabel}: <strong>+${fmt(getMainStatVal(it))}${sInfo.unit}</strong> ${it.rarity === 4 ? '<span class="mythic-text" style="font-size:10px;font-weight:800;">[追撃+1]</span>' : ''}
+          </div>
+          <div style="font-size:10px;color:var(--text-muted);margin-top:2px;">
+            ${it.subStats.map(s => `${SUB_MAP[s.key].label}+${s.val}%`).join(' / ')}
+          </div>
+        </div>
+      `;
+    }).join('');
+
+    eqListEl.querySelectorAll('[data-select-id]').forEach(el => {
+      el.addEventListener('click', () => {
+        if (uiState.isRollingUpgrade) return;
+        uiState.selectedItemId = el.getAttribute('data-select-id');
+        uiState.upgradeFeedback = '';
+        uiState.lastBoostedSubKey = null;
+        renderDrawer(true);
+      });
+    });
+
+    const invListEl = document.getElementById('inv-list');
+    const prevScroll = invListEl.scrollTop;
+
+    let items = state.inventory.filter(it => uiState.filterSlot === 'all' || it.slot === uiState.filterSlot);
+    if (uiState.sortMode === 'dps') {
+      items = [...items].sort((a, b) => calcDpsDiffPct(b) - calcDpsDiffPct(a));
+    } else if (uiState.sortMode === 'rarity') {
+      items = [...items].sort((a, b) => (b.rarity - a.rarity) || (b.stage - a.stage));
+    } else if (uiState.sortMode === 'stage') {
+      items = [...items].sort((a, b) => (b.stage - a.stage) || (b.rarity - a.rarity));
+    }
+
+    if (items.length === 0) {
+      invListEl.innerHTML = `<div style="color:var(--text-muted);text-align:center;margin-top:36px;font-size:12px;">該当する装備はありません。<br>敵を倒してドロップを待ちましょう！</div>`;
+    } else {
+      const eqArmorHp = state.equipped.armor ? getMainStatVal(state.equipped.armor) : 0;
+      invListEl.innerHTML = items.map(it => {
+        const rInfo = RARITIES[it.rarity];
+        const sInfo = SLOTS[it.slot];
+        const diff = calcDpsDiffPct(it);
+        const sel = uiState.selectedItemId === it.id ? 'selected' : '';
+        const hpBadge = it.slot === 'armor' && getMainStatVal(it) > eqArmorHp
+          ? `<span style="color:var(--green);font-weight:700;">(HP↑)</span>`
+          : '';
+        return `
+          <div class="inv-item ${sel}" data-select-id="${it.id}" style="border-left-color:${rInfo.color};">
+            <div class="inv-icon-box" style="border:1px solid ${rInfo.border};">${it.icon}</div>
+            <div class="inv-mid">
+              <div class="inv-title-line">
+                <span class="inv-name">${rarityNameHtml(it)}</span>
+                ${it.level > 0 ? `<span style="color:var(--gold);font-size:11px;">+${it.level}</span>` : ''}
+                ${it.locked ? `<span title="ロック中">🔒</span>` : ''}
+              </div>
+              <div class="inv-meta">
+                <span>${sInfo.mainLabel}+${fmt(getMainStatVal(it))}${sInfo.unit} ${hpBadge}</span>
+                <span>St.${it.stage}</span>
+                <span style="color:var(--text-dim);">サブ${it.subStats.length}個</span>
+              </div>
+            </div>
+            <div class="inv-right">
+              ${formatDpsDiffHtml(diff)}
+              <button class="btn btn-primary" data-quick-equip="${it.id}" style="padding:2px 8px;font-size:11px;">装備</button>
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    invListEl.scrollTop = prevScroll;
+
+    invListEl.querySelectorAll('[data-select-id]').forEach(el => {
+      el.addEventListener('click', (e) => {
+        if (uiState.isRollingUpgrade || e.target.closest('[data-quick-equip]')) return;
+        uiState.selectedItemId = el.getAttribute('data-select-id');
+        uiState.upgradeFeedback = '';
+        uiState.lastBoostedSubKey = null;
+        renderDrawer(true);
+      });
+    });
+
+    invListEl.querySelectorAll('[data-quick-equip]').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (uiState.isRollingUpgrade) return;
+        equipItem(btn.getAttribute('data-quick-equip'));
+      });
+    });
+
+    if (refreshDetail || !findItemById(uiState.selectedItemId)) {
+      renderDetailPanel();
+    } else {
+      refreshDetailUpgradeButton();
+    }
+  }
+
+  function renderDetailPanel() {
+    const container = document.getElementById('detail-content');
+    const found = findItemById(uiState.selectedItemId);
+    if (!found) {
+      container.innerHTML = `<div style="color:var(--text-muted);text-align:center;margin-top:45px;font-size:12px;">左の装備中スロット、または中央のバッグから<br>装備を選択すると比較・強化ができます。</div>`;
+      document.getElementById('detail-actions').innerHTML = '';
+      return;
+    }
+
+    const { item, isEquipped } = found;
+    const rInfo = RARITIES[item.rarity];
+    const sInfo = SLOTS[item.slot];
+    const curEquipped = state.equipped[item.slot];
+    const curStats = calcHeroStats(state.equipped, false);
+
+    const nextStats = isEquipped
+      ? curStats
+      : calcHeroStats({ ...state.equipped, [item.slot]: item }, false);
+
+    const diffPct = isEquipped ? 0 : calcDpsDiffPct(item);
+    const upgCost = getUpgradeCost(item);
+    const isMaxLv = item.level >= rInfo.maxLv;
+    const canAfford = state.stones >= upgCost;
+    const nextBoostLv = item.level + (3 - (item.level % 3));
+    const salvageVal = getSalvageValue(item);
+
+    const mainVal = getMainStatVal(item);
+    const eqMainVal = curEquipped ? getMainStatVal(curEquipped) : 0;
+    const mainDiff = mainVal - eqMainVal;
+    let mainDiffStr = '';
+    if (!isEquipped && curEquipped) {
+      if (mainDiff > 0) mainDiffStr = `<span style="color:var(--green);">(+${fmt(mainDiff)}${sInfo.unit})</span>`;
+      else if (mainDiff < 0) mainDiffStr = `<span style="color:var(--red);">(${fmt(mainDiff)}${sInfo.unit})</span>`;
+    }
+
+    container.innerHTML = `
+      <div class="detail-header-card" style="border-color:${rInfo.border};background:${rInfo.bg};">
+        <div class="detail-title-row">
+          <div class="detail-item-name">${item.icon} ${rarityNameHtml(item)} ${item.level > 0 ? `<span style="color:var(--gold);">+${item.level}</span>` : ''}</div>
+          <span class="rarity-tag" style="color:${rInfo.color};">${rInfo.name}</span>
+        </div>
+        <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text-muted);margin-top:4px;">
+          <span>${sInfo.label} / ドロップ: St.${item.stage}</span>
+          <span>強化: ${item.level} / ${rInfo.maxLv} ${isEquipped ? '<strong style="color:var(--cyan);">[装備中]</strong>' : ''}</span>
+        </div>
+        ${item.rarity === 4 ? `<div style="margin-top:4px;font-size:11px;font-weight:800;" class="mythic-text">✨ ミシック固有：攻撃時に追撃ヒット +1（威力50%）</div>` : ''}
+      </div>
+
+      <div class="dps-compare-banner">
+        <div>
+          <div style="font-size:10px;color:var(--text-muted);">予想DPS比較</div>
+          <div style="font-weight:700;">
+            ${isEquipped ? `${fmt(curStats.dps)} (現在装備中)` : `${fmt(curStats.dps)} → <span style="color:${diffPct >= 0 ? 'var(--green)' : 'var(--red)'};">${fmt(nextStats.dps)}</span>`}
+          </div>
+        </div>
+        <div>${isEquipped ? '<span class="dps-diff dps-same">装備中</span>' : formatDpsDiffHtml(diffPct)}</div>
+      </div>
+
+      <div class="stat-compare-box">
+        <div style="font-size:10px;color:var(--text-muted);font-weight:700;">メインステータス（強化で毎回+12%）</div>
+        <div class="substat-row">
+          <span>${sInfo.mainLabel}</span>
+          <span><strong>+${fmt(mainVal)}${sInfo.unit}</strong> ${mainDiffStr}</span>
+        </div>
+
+        <div style="font-size:10px;color:var(--text-muted);font-weight:700;margin-top:4px;display:flex;justify-content:space-between;">
+          <span>サブステータス（+3毎にランダム成長）</span>
+          ${!isMaxLv ? `<span style="color:var(--gold);">次の成長: +${nextBoostLv}</span>` : ''}
+        </div>
+        ${item.subStats.map((sub, sIdx) => {
+          const def = SUB_MAP[sub.key];
+          const pip = sub.boosts > 0 ? `<span class="boost-pip">▲${sub.boosts}</span>` : '';
+          return `
+            <div class="substat-row" data-sub-idx="${sIdx}">
+              <span>${def.label}${pip}</span>
+              <span style="color:#e2e8f0;font-weight:700;">+${sub.val.toFixed(1)}${def.unit}</span>
+            </div>
+          `;
+        }).join('')}
+      </div>
+
+      <div class="upgrade-feedback">${escapeHtml(uiState.upgradeFeedback)}</div>
+    `;
+
+    if (uiState.lastBoostedSubKey !== null) {
+      const targetRow = container.querySelector(`[data-sub-idx="${uiState.lastBoostedSubKey}"]`);
+      if (targetRow) targetRow.classList.add('flash-upgrade');
+    }
+
+    document.getElementById('detail-actions').innerHTML = `
+      <div class="detail-actions">
+        ${!isEquipped
+          ? `<button class="btn btn-primary btn-span2" id="btn-detail-equip" style="padding:7px;" ${uiState.isRollingUpgrade ? 'disabled' : ''}>⚔️ この装備に付け替える</button>`
+          : `<button class="btn btn-span2" disabled style="padding:7px;">✓ 現在装備中です</button>`
+        }
+        <button class="btn btn-gold" id="btn-detail-upgrade" ${isMaxLv || !canAfford || uiState.isRollingUpgrade ? 'disabled' : ''}>
+          ${isMaxLv ? '🔨 最大強化済み' : `🔨 強化 (+1) [💎${fmt(upgCost)}]`}
+        </button>
+        <button class="btn" id="btn-detail-lock" ${uiState.isRollingUpgrade ? 'disabled' : ''}>
+          ${item.locked ? '🔓 ロック解除' : '🔒 ロックする'}
+        </button>
+        <button class="btn btn-danger btn-span2" id="btn-detail-salvage" ${isEquipped || item.locked || uiState.isRollingUpgrade ? 'disabled' : ''}>
+          ${isEquipped ? '※ 装備中は分解できません' : item.locked ? '🔒 ロック中は分解できません' : `💎 分解して強化石 +${fmt(salvageVal)} 獲得`}
+        </button>
+      </div>
+    `;
+
+    const eqBtn = document.getElementById('btn-detail-equip');
+    if (eqBtn) eqBtn.addEventListener('click', () => equipItem(item.id));
+
+    document.getElementById('btn-detail-upgrade').addEventListener('click', () => upgradeItem(item.id));
+    document.getElementById('btn-detail-lock').addEventListener('click', () => toggleLock(item.id));
+    document.getElementById('btn-detail-salvage').addEventListener('click', () => salvageSingleItem(item.id));
+  }
+
+  // =========================================================
+  // 装備操作アクション（+3強化ルーレット演出含む）
+  // =========================================================
+  function equipItem(itemId) {
+    const idx = state.inventory.findIndex(i => i.id === itemId);
+    if (idx === -1) return;
+    const nextItem = state.inventory[idx];
+    const prevItem = state.equipped[nextItem.slot];
+
+    state.inventory.splice(idx, 1);
+    if (prevItem) {
+      state.inventory.unshift(prevItem);
+    }
+    state.equipped[nextItem.slot] = nextItem;
+
+    const newStats = calcHeroStats(state.equipped, true);
+    battle.heroHp = Math.min(newStats.hp, battle.heroHp);
+
+    uiState.selectedItemId = nextItem.id;
+    uiState.upgradeFeedback = '';
+    uiState.lastBoostedSubKey = null;
+    playSfx('upgrade');
+    addLog(`装備変更: ${nextItem.name} を装着`, RARITIES[nextItem.rarity].color);
+    updateStripUI();
+    renderDrawer(true);
+    saveGame();
+  }
+
+  function upgradeItem(itemId) {
+    if (uiState.isRollingUpgrade) return;
+    const found = findItemById(itemId);
+    if (!found) return;
+    const item = found.item;
+    const rInfo = RARITIES[item.rarity];
+    if (item.level >= rInfo.maxLv) return;
+
+    const cost = getUpgradeCost(item);
+    if (state.stones < cost) return;
+
+    state.stones -= cost;
+    item.spentStones = (item.spentStones || 0) + cost;
+    item.level += 1;
+    uiState.lastBoostedSubKey = null;
+
+    if (item.level % 3 === 0 && item.subStats.length > 0) {
+      const targetIdx = randInt(0, item.subStats.length - 1);
+      const targetSub = item.subStats[targetIdx];
+      const subDef = SUB_MAP[targetSub.key];
+      const sMult = 1 + (item.stage - 1) * subDef.stageScale;
+      const minBoost = subDef.min * 0.72 * rInfo.subMult * sMult;
+      const maxBoost = subDef.max * 0.98 * rInfo.subMult * sMult;
+      const rollRatio = Math.random();
+      const boost = +(minBoost + (maxBoost - minBoost) * rollRatio).toFixed(1);
+      const isJackpot = rollRatio >= 0.78;
+
+      let timer = null;
+      const commitBoost = () => {
+        if (timer !== null) {
+          clearInterval(timer);
+          uiState.activeIntervals.delete(timer);
+          timer = null;
+        }
+        targetSub.val = +(targetSub.val + boost).toFixed(1);
+        targetSub.boosts = (targetSub.boosts || 0) + 1;
+        uiState.lastBoostedSubKey = targetIdx;
+        uiState.isRollingUpgrade = false;
+        uiState.pendingUpgradeFlush = null;
+        uiState.upgradeFeedback = isJackpot
+          ? `🔥 大成功(神跳ね)!!『${subDef.label}』が +${boost.toFixed(1)}${subDef.unit} 上昇！`
+          : `✨ +${item.level}ボーナス！『${subDef.label}』が +${boost.toFixed(1)}${subDef.unit} 上昇！`;
+      };
+
+      uiState.pendingUpgradeFlush = commitBoost;
+      uiState.isRollingUpgrade = true;
+      uiState.upgradeFeedback = '🎲 サブステータス抽選中...';
+      renderDetailPanel();
+
+      const steps = Math.max(6, item.subStats.length * 2 + targetIdx);
+      let step = 0;
+
+      timer = setInterval(() => {
+        const rows = document.querySelectorAll('#detail-content [data-sub-idx]');
+        rows.forEach(r => r.classList.remove('roulette-active'));
+        const curIdx = step % item.subStats.length;
+        const curRow = document.querySelector(`#detail-content [data-sub-idx="${curIdx}"]`);
+        if (curRow) curRow.classList.add('roulette-active');
+        playSfx('roulette');
+
+        if (step >= steps && curIdx === targetIdx) {
+          commitBoost();
+          playSfx(isJackpot ? 'jackpot' : 'upgrade');
+          updateStripUI();
+          renderDrawer(true);
+          saveGame();
+          return;
+        }
+        step++;
+      }, 55);
+      uiState.activeIntervals.add(timer);
+    } else {
+      uiState.upgradeFeedback = `🔨 +${item.level} に強化しました！`;
+      playSfx('upgrade');
+      updateStripUI();
+      renderDrawer(true);
+      saveGame();
+    }
+  }
+
+  function toggleLock(itemId) {
+    const found = findItemById(itemId);
+    if (!found) return;
+    found.item.locked = !found.item.locked;
+    renderDrawer(true);
+    saveGame();
+  }
+
+  function salvageSingleItem(itemId) {
+    const idx = state.inventory.findIndex(i => i.id === itemId);
+    if (idx === -1) return;
+    const item = state.inventory[idx];
+    if (item.locked) return;
+
+    const gain = getSalvageValue(item);
+    state.inventory.splice(idx, 1);
+    state.stones += gain;
+
+    if (uiState.selectedItemId === itemId) {
+      uiState.selectedItemId = state.inventory[idx]?.id || state.inventory[0]?.id || state.equipped.weapon?.id || null;
+    }
+
+    addLog(`分解: ${item.name} → +${gain}💎`);
+    playSfx('drop');
+    updateStripUI();
+    renderDrawer(true);
+    saveGame();
+  }
+
+  function salvageBulk(mode) {
+    const kept = [];
+    let count = 0;
+    let totalGain = 0;
+    let protectedArmorCount = 0;
+    const eqArmorHp = state.equipped.armor ? getMainStatVal(state.equipped.armor) : 0;
+
+    for (const item of state.inventory) {
+      if (item.locked) {
+        kept.push(item);
+        continue;
+      }
+      let shouldSalvage = false;
+      if (mode === 'common') shouldSalvage = item.rarity <= 0;
+      else if (mode === 'rare') shouldSalvage = item.rarity <= 1;
+      else if (mode === 'epic') shouldSalvage = item.rarity <= 2;
+      else if (mode === 'weaker') {
+        if (item.slot === 'armor' && getMainStatVal(item) > eqArmorHp) {
+          protectedArmorCount++;
+          shouldSalvage = false;
+        } else {
+          shouldSalvage = calcDpsDiffPct(item) < -0.05;
+        }
+      }
+
+      if (shouldSalvage) {
+        totalGain += getSalvageValue(item);
+        count++;
+      } else {
+        kept.push(item);
+      }
+    }
+
+    if (count === 0) {
+      uiState.upgradeFeedback = protectedArmorCount > 0
+        ? `分解対象なし（HP上昇の防具 ${protectedArmorCount}個を保護しました）`
+        : '分解対象の装備がありませんでした。';
+      renderDetailPanel();
+      return;
+    }
+
+    state.inventory = kept;
+    state.stones += totalGain;
+    uiState.upgradeFeedback = `♻️ ${count}個の装備を一括分解し +${fmt(totalGain)}💎 獲得！`
+      + (protectedArmorCount > 0 ? `（HP上昇防具 ${protectedArmorCount}個は保護）` : '');
+    if (!findItemById(uiState.selectedItemId)) {
+      uiState.selectedItemId = state.inventory[0]?.id || state.equipped.weapon?.id || null;
+    }
+
+    addLog(`一括分解: ${count}個 → +${fmt(totalGain)}💎`, '#38bdf8');
+    playSfx('drop');
+    updateStripUI();
+    renderDrawer(true);
+    saveGame();
+  }
+
+  function openDrawer() {
+    uiState.drawerOpen = true;
+    const d = document.getElementById('equip-drawer');
+    d.classList.add('open');
+    if (!findItemById(uiState.selectedItemId)) {
+      uiState.selectedItemId = state.inventory[0]?.id || state.equipped.weapon?.id || null;
+    }
+    renderDrawer(true);
+  }
+
+  function closeDrawer() {
+    if (uiState.isRollingUpgrade) return;
+    uiState.drawerOpen = false;
+    document.getElementById('equip-drawer').classList.remove('open');
+  }
+
+  // =========================================================
+  // 封印の宝箱ガチャモーダル処理
+  // =========================================================
+  function updateChestModalHeader() {
+    document.getElementById('modal-chest-normal').textContent = fmt(state.chests);
+    document.getElementById('modal-chest-mythic').textContent = fmt(state.mythicChests);
+    document.getElementById('modal-chest-stage').textContent = state.maxStage;
+    document.getElementById('btn-pull-1').disabled = uiState.isOpeningChests || state.chests < 1;
+    document.getElementById('btn-pull-10').disabled = uiState.isOpeningChests || state.chests < 1;
+    document.getElementById('btn-pull-mythic').disabled = uiState.isOpeningChests || state.mythicChests < 1;
+  }
+
+  function openChestModal() {
+    updateChestModalHeader();
+    document.getElementById('chest-modal').classList.add('open');
+  }
+
+  function pullChests(count, isMythicBox = false) {
+    if (uiState.isOpeningChests) return;
+    const avail = isMythicBox ? state.mythicChests : state.chests;
+    const pullNum = Math.min(count, avail);
+    if (pullNum <= 0) return;
+
+    if (isMythicBox) state.mythicChests -= pullNum;
+    else state.chests -= pullNum;
+
+    uiState.isOpeningChests = true;
+    updateChestModalHeader();
+    updateStripUI();
+
+    const rollStage = state.maxStage;
+    const useAutoSalvage = document.getElementById('chk-chest-autosalvage').checked;
+    const grid = document.getElementById('chest-result-grid');
+    grid.innerHTML = '';
+
+    const results = [];
+    for (let i = 0; i < pullNum; i++) {
+      const item = isMythicBox
+        ? generateItem(rollStage, 4, null, false, true, true)
+        : generateItem(rollStage, null, null, false, true, true);
+      const shouldPromoteAnim = item.rarity >= 2 && Math.random() < 0.45;
+      results.push({ item, shouldPromoteAnim, committed: false, salvagedDust: 0, bagFull: false });
+    }
+
+    const commitItemToState = (res) => {
+      if (res.committed) return res;
+      res.committed = true;
+      const it = res.item;
+      if (useAutoSalvage && it.rarity <= state.autoSalvageRarity) {
+        res.salvagedDust = getSalvageValue(it);
+        state.stones += res.salvagedDust;
+      } else if (state.inventory.length >= MAX_BAG_SIZE) {
+        res.salvagedDust = getSalvageValue(it);
+        state.stones += res.salvagedDust;
+        res.bagFull = true;
+      } else {
+        state.inventory.unshift(it);
+      }
+      return res;
+    };
+
+    for (const res of results) {
+      uiState.pendingChestFlushes.push(() => commitItemToState(res));
+    }
+
+    let revealed = 0;
+    results.forEach((res, idx) => {
+      const card = document.createElement('div');
+      card.className = 'gacha-card';
+      card.innerHTML = `<div style="text-align:center;font-size:26px;padding:12px 0;">${isMythicBox ? '🌈' : '📦'}</div><div style="text-align:center;font-size:11px;color:var(--text-muted);">開封待機中...</div>`;
+      grid.appendChild(card);
+
+      addTrackedTimeout(() => {
+        const it = res.item;
+        playSfx('chest');
+
+        if (res.shouldPromoteAnim) {
+          const fakeR = RARITIES[Math.max(1, it.rarity - 1)];
+          card.classList.add('shaking');
+          card.style.borderLeftColor = fakeR.color;
+          card.innerHTML = `<div style="text-align:center;font-size:26px;padding:10px 0;">✨</div><div style="text-align:center;font-weight:700;color:${fakeR.color};">${fakeR.name}…？</div>`;
+
+          addTrackedTimeout(() => {
+            card.classList.remove('shaking');
+            commitItemToState(res);
+            finalizeGachaCard(card, res);
+            if (++revealed >= pullNum) finishChestBatch();
+          }, 380);
+        } else {
+          commitItemToState(res);
+          finalizeGachaCard(card, res);
+          if (++revealed >= pullNum) finishChestBatch();
+        }
+      }, idx * 100);
+    });
+  }
+
+  function finalizeGachaCard(card, res) {
+    const it = res.item;
+    const rInfo = RARITIES[it.rarity];
+    const sInfo = SLOTS[it.slot];
+    card.classList.add('pop');
+    card.style.borderLeftColor = rInfo.color;
+    card.style.background = rInfo.bg;
+
+    if (it.rarity === 4) playSfx('mythic');
+    else if (it.rarity === 3) playSfx('legend');
+    else if (it.rarity === 2) playSfx('drop');
+
+    const diff = calcDpsDiffPct(it);
+    const footerHtml = res.salvagedDust > 0
+      ? `<div style="font-size:11px;color:var(--cyan);font-weight:700;">♻️ ${res.bagFull ? '満杯' : '自動'}分解 +${fmt(res.salvagedDust)}💎</div>`
+      : `<div style="display:flex;justify-content:space-between;align-items:center;margin-top:2px;">
+           ${formatDpsDiffHtml(diff)}
+           <button class="btn btn-primary" data-gacha-equip="${it.id}" style="padding:2px 8px;font-size:11px;">装備</button>
+         </div>`;
+
+    card.innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:center;font-size:11px;">
+        <span class="rarity-tag" style="color:${rInfo.color};">${rInfo.name}</span>
+        <span style="color:var(--text-muted);">St.${it.stage}</span>
+      </div>
+      <div style="font-weight:800;font-size:12px;">${it.icon} ${rarityNameHtml(it)}</div>
+      <div style="font-size:11px;color:var(--text-main);">${sInfo.mainLabel} +${fmt(getMainStatVal(it))}${sInfo.unit} / サブ${it.subStats.length}</div>
+      ${footerHtml}
+    `;
+
+    const eqBtn = card.querySelector('[data-gacha-equip]');
+    if (eqBtn) {
+      eqBtn.addEventListener('click', () => {
+        equipItem(it.id);
+        eqBtn.disabled = true;
+        eqBtn.textContent = '装備済';
+      });
+    }
+  }
+
+  function finishChestBatch() {
+    uiState.pendingChestFlushes = [];
+    uiState.isOpeningChests = false;
+    updateChestModalHeader();
+    updateStripUI();
+    if (uiState.drawerOpen) renderDrawer(true);
+    saveGame();
+  }
+
+  // =========================================================
+  // セーブ・ロード（後方互換マイグレーション＆サニタイズ付き）
+  // =========================================================
+  function sanitizeItem(it, fallbackSlot = 'weapon') {
+    if (!it || typeof it !== 'object') return null;
+    const slot = SLOTS[it.slot] ? it.slot : fallbackSlot;
+    const rarity = clamp(typeof it.rarity === 'number' ? Math.floor(it.rarity) : 0, 0, RARITIES.length - 1);
+    const stage = Math.max(1, typeof it.stage === 'number' ? Math.floor(it.stage) : 1);
+    const level = clamp(typeof it.level === 'number' ? Math.floor(it.level) : 0, 0, RARITIES[rarity].maxLv);
+    const subStats = Array.isArray(it.subStats)
+      ? it.subStats.filter(s => s && SUB_MAP[s.key] && typeof s.val === 'number').map(s => ({
+          key: s.key,
+          val: +s.val.toFixed(1),
+          boosts: typeof s.boosts === 'number' ? s.boosts : 0
+        }))
+      : [];
+    const mainBase = it.mainStat && typeof it.mainStat.base === 'number' ? Math.max(1, it.mainStat.base) : 10;
+    return {
+      id: typeof it.id === 'string' ? it.id : uid(),
+      slot,
+      name: typeof it.name === 'string' ? it.name : SLOTS[slot].label,
+      icon: typeof it.icon === 'string' ? it.icon : SLOTS[slot].icon,
+      rarity,
+      stage,
+      level,
+      locked: !!it.locked,
+      spentStones: typeof it.spentStones === 'number' ? Math.max(0, it.spentStones) : 0,
+      createdAt: typeof it.createdAt === 'number' ? it.createdAt : Date.now(),
+      mainStat: { type: SLOTS[slot].mainType, base: mainBase },
+      subStats
+    };
+  }
+
+  function saveGame() {
+    try {
+      state.lastSaveTime = Date.now();
+      localStorage.setItem(SAVE_KEY, JSON.stringify(state));
+    } catch (e) {}
+  }
+
+  function loadGame() {
+    try {
+      const raw = localStorage.getItem(SAVE_KEY);
+      if (!raw) return false;
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed.stage !== 'number' || !parsed.equipped) return false;
+
+      const def = createDefaultState();
+      state = {
+        ...def,
+        ...parsed,
+        stage: Math.max(1, Math.floor(parsed.stage)),
+        maxStage: Math.max(1, Math.floor(parsed.maxStage || parsed.stage)),
+        wave: clamp(Math.floor(parsed.wave || 1), 1, 5),
+        chests: typeof parsed.chests === 'number' ? Math.max(0, parsed.chests) : 0,
+        mythicChests: typeof parsed.mythicChests === 'number' ? Math.max(0, parsed.mythicChests) : 0,
+        maxDmg: typeof parsed.maxDmg === 'number' ? Math.max(0, parsed.maxDmg) : 0,
+        cleared100: typeof parsed.cleared100 === 'boolean' ? parsed.cleared100 : (parsed.maxStage > 100),
+        equipped: {
+          weapon: sanitizeItem(parsed.equipped.weapon, 'weapon') || def.equipped.weapon,
+          armor: sanitizeItem(parsed.equipped.armor, 'armor') || def.equipped.armor,
+          accessory: sanitizeItem(parsed.equipped.accessory, 'accessory') || def.equipped.accessory
+        },
+        inventory: Array.isArray(parsed.inventory)
+          ? parsed.inventory.map(it => sanitizeItem(it)).filter(Boolean).slice(0, MAX_BAG_SIZE)
+          : [],
+        logs: Array.isArray(parsed.logs) ? parsed.logs : []
+      };
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  // =========================================================
+  // イベントリスナー登録 & 初期化
+  // =========================================================
+  function bindEvents() {
+    document.getElementById('btn-open-equip').addEventListener('click', () => {
+      uiState.drawerOpen ? closeDrawer() : openDrawer();
+    });
+    document.getElementById('btn-close-equip').addEventListener('click', closeDrawer);
+
+    document.getElementById('btn-open-chest').addEventListener('click', openChestModal);
+    document.getElementById('btn-close-chest').addEventListener('click', () => {
+      if (uiState.isOpeningChests) return;
+      document.getElementById('chest-modal').classList.remove('open');
+    });
+    document.getElementById('btn-pull-1').addEventListener('click', () => pullChests(1, false));
+    document.getElementById('btn-pull-10').addEventListener('click', () => pullChests(10, false));
+    document.getElementById('btn-pull-mythic').addEventListener('click', () => pullChests(1, true));
+
+    document.getElementById('btn-close-milestone').addEventListener('click', () => {
+      document.getElementById('milestone-modal').classList.remove('open');
+    });
+
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        if (uiState.drawerOpen) closeDrawer();
+        if (!uiState.isOpeningChests) document.getElementById('chest-modal').classList.remove('open');
+      }
+    });
+
+    document.getElementById('btn-stage-prev').addEventListener('click', () => {
+      if (state.stage <= 1) return;
+      state.stage -= 1;
+      state.wave = 1;
+      enterFloor();
+      battle.mode = 'WALKING';
+      updateStripUI();
+      saveGame();
+    });
+
+    document.getElementById('btn-stage-next').addEventListener('click', () => {
+      if (state.stage >= state.maxStage) return;
+      state.stage += 1;
+      state.wave = 1;
+      enterFloor();
+      battle.mode = 'WALKING';
+      updateStripUI();
+      saveGame();
+    });
+
+    document.getElementById('btn-auto-prog').addEventListener('click', () => {
+      state.autoProgress = !state.autoProgress;
+      updateStripUI();
+      saveGame();
+    });
+
+    document.getElementById('select-auto-salvage').addEventListener('change', (e) => {
+      state.autoSalvageRarity = parseInt(e.target.value, 10);
+      saveGame();
+    });
+
+    document.getElementById('btn-sound').addEventListener('click', () => {
+      state.soundOn = !state.soundOn;
+      if (state.soundOn) playSfx('upgrade');
+      updateStripUI();
+      saveGame();
+    });
+
+    document.getElementById('btn-reset').addEventListener('click', () => {
+      if (!confirm('セーブデータをすべて初期化して最初からやり直しますか？')) return;
+      clearAllPendingTimers();
+      uiState.pendingUpgradeFlush = null;
+      uiState.pendingChestFlushes = [];
+      uiState.isRollingUpgrade = false;
+      uiState.isOpeningChests = false;
+      uiState.upgradeFeedback = '';
+      uiState.lastBoostedSubKey = null;
+      document.getElementById('chest-modal').classList.remove('open');
+      document.getElementById('milestone-modal').classList.remove('open');
+      document.getElementById('offline-modal').classList.remove('open');
+      try { localStorage.removeItem(SAVE_KEY); } catch (e) {}
+      state = createDefaultState();
+      const s = calcHeroStats(state.equipped, false);
+      battle.heroHp = s.hp;
+      battle.mode = 'WALKING';
+      uiState.selectedItemId = null;
+      enterFloor();
+      renderLogs();
+      updateStripUI();
+      if (uiState.drawerOpen) renderDrawer(true);
+      saveGame();
+    });
+
+    document.querySelectorAll('#slot-filter-tabs .tab-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        uiState.filterSlot = btn.dataset.filter;
+        renderDrawer(true);
+      });
+    });
+
+    document.getElementById('select-sort').addEventListener('change', (e) => {
+      uiState.sortMode = e.target.value;
+      renderDrawer(true);
+    });
+
+    document.getElementById('btn-salvage-common').addEventListener('click', () => salvageBulk('common'));
+    document.getElementById('btn-salvage-rare').addEventListener('click', () => salvageBulk('rare'));
+    document.getElementById('btn-salvage-epic').addEventListener('click', () => salvageBulk('epic'));
+    document.getElementById('btn-salvage-weaker').addEventListener('click', () => salvageBulk('weaker'));
+
+    document.getElementById('btn-close-offline').addEventListener('click', () => {
+      document.getElementById('offline-modal').classList.remove('open');
+    });
+
+    document.getElementById('btn-crawl-pause').addEventListener('click', (e) => {
+      crawler.paused = !crawler.paused;
+      e.target.textContent = crawler.paused ? '▶ 再開' : '⏸ 一時停止';
+    });
+    document.getElementById('btn-crawl-speed').addEventListener('click', (e) => {
+      crawler.speed = crawler.speed === 1 ? 2 : crawler.speed === 2 ? 4 : 1;
+      e.target.textContent = '速度 ×' + crawler.speed;
+    });
+    document.getElementById('btn-crawl-style').addEventListener('click', () => {
+      crawler.moveStyle = crawler.moveStyle === 'smooth' ? 'step' : 'smooth';
+      const h = crawler.hero;
+      h.cx = clamp(Math.floor(h.x), 1, CRAWL_COLS - 2);
+      h.cy = clamp(Math.floor(h.y), 1, CRAWL_ROWS - 2);
+      if (crawler.moveStyle === 'step') {
+        h.x = h.cx + 0.5;
+        h.y = h.cy + 0.5;
+        h.angle = Math.round(h.angle / (Math.PI / 2)) * (Math.PI / 2);
+      }
+      if (crawler.phase !== 'face') {
+        crawler.phase = 'decide';
+        crawler.path = null;
+        crawler.segs = null;
+        crawler.segIdx = 0;
+        crawler.segS = 0;
+      }
+      crawlReveal();
+      try { localStorage.setItem(CRAWL_STYLE_KEY, crawler.moveStyle); } catch (e) {}
+      applyCrawlStyleUI();
+    });
+    document.getElementById('btn-crawl-size').addEventListener('click', () => {
+      crawlSizeIdx = (crawlSizeIdx + 1) % CRAWL_SIZES.length;
+      try { localStorage.setItem(CRAWL_SIZE_KEY, String(crawlSizeIdx)); } catch (e) {}
+      applyCrawlSize();
+    });
+    window.addEventListener('resize', fitCanvas);
+
+    window.addEventListener('beforeunload', () => {
+      flushPendingRewards();
+      saveGame();
+    });
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) {
+        flushPendingRewards();
+        saveGame();
+      } else {
+        updateStripUI();
+        if (uiState.drawerOpen) renderDrawer(true);
+      }
+    });
+  }
+
+  function init() {
+    const hasSave = loadGame();
+    bindEvents();
+
+    const stats = calcHeroStats(state.equipped, false);
+    battle.heroHp = stats.hp;
+    try {
+      const si = parseInt(localStorage.getItem(CRAWL_SIZE_KEY), 10);
+      if (si >= 0 && si < CRAWL_SIZES.length) crawlSizeIdx = si;
+      const st = localStorage.getItem(CRAWL_STYLE_KEY);
+      if (st === 'smooth' || st === 'step') crawler.moveStyle = st;
+    } catch (e) {}
+    applyCrawlSize();
+    applyCrawlStyleUI();
+    enterFloor();
+    renderLogs();
+    updateStripUI();
+
+    if (hasSave && state.lastSaveTime) {
+      const elapsedSec = (Date.now() - state.lastSaveTime) / 1000;
+      if (elapsedSec >= 10) {
+        applyOfflineGains(elapsedSec, true);
+      }
+    }
+
+    lastFrameTime = performance.now();
+    requestAnimationFrame(tick);
+  }
+
+  init();
+})();
+</script>
+</body>
+</html>
