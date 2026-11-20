@@ -11,7 +11,7 @@ const rootDir = path.resolve(__dirname, '..');
 const outputArg = process.argv[2];
 const outputPath = outputArg
   ? path.resolve(rootDir, outputArg)
-  : path.resolve(rootDir, 'dist', 'strip-hero.html');
+  : path.resolve(rootDir, 'standalone', 'strip-hero.html');
 const tmpDir = path.resolve(rootDir, '.singlefile-tmp');
 
 function resolveDistAsset(href) {
