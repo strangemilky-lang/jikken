@@ -20,19 +20,29 @@ import { calcHeroStats, calcHitDamage, clamp, fmt, generateItem, rand } from '..
 import {
   angDiff,
   bfsPath,
-  buildSmoothSegments,
+  cardinalAngleFromDelta,
   crawlKey,
   createEnemy,
-  evalSmoothSeg,
+  findChokeRetreatCell,
+  findHeroSafePath,
   generateMaze,
   generateSanctumChamber,
   getBiome,
-  pickEncounterAheadCell,
+  getEngagedEnemies,
   pickExplorationTarget,
+  placeDungeonEnemies,
   placeMazeEvents,
-  shouldTriggerRandomEncounter,
-  type SmoothSegment,
+  revealDungeonTiles,
+  shouldEnterRestMode,
+  shouldExitRestMode,
+  shouldRetreatInRoom,
+  snapCardinalAngle,
+  stepEnemiesTowardHero,
 } from '../game/maze';
+import {
+  getCompiledSprite,
+  getWallTextureCanvas,
+} from '../game/pixelArt';
 import {
   getUnlockedSanctumTarget,
   isHeldAtGate,
@@ -43,13 +53,16 @@ import {
 } from '../game/sanctum';
 import type {
   CrawlSizeMode,
+  DungeonRoom,
   Enemy,
+  FloorEnemy,
   FloorPalette,
   GameState,
   Item,
   MazeCell,
   MazeEvent,
   MoveStyle,
+  SpriteKey,
 } from '../game/types';
 
 export interface DungeonEngineApi {
@@ -71,6 +84,7 @@ interface DungeonViewportProps {
     floorEncounters: number;
     stepsToStairs: number;
     stairsFound: boolean;
+    hasFloorKey: boolean;
     explorePct: number;
     bossActive: boolean;
     paused: boolean;
@@ -82,6 +96,7 @@ interface DungeonViewportProps {
     floorEncounters: number;
     stepsToStairs: number;
     stairsFound: boolean;
+    hasFloorKey: boolean;
     explorePct: number;
     bossActive: boolean;
     paused: boolean;
@@ -154,41 +169,78 @@ export function DungeonViewport({
   // Mutable simulation state (never drives 60Hz React state)
   const simRef = useRef({
     grid: [] as number[][],
+    roomGrid: [] as number[][],
+    rooms: [] as DungeonRoom[],
+    visitedRooms: new Set<number>(),
+    monsterHouseRoomId: null as number | null,
+    chokeHoldRoomId: null as number | null,
+    chokeWaitTurns: 0,
+    pendingRoomRetreat: null as {
+      roomId: number;
+      retreatCell: MazeCell;
+      faceAngle: number;
+    } | null,
     stairs: { x: CRAWL_COLS - 2, y: CRAWL_ROWS - 2 } as MazeCell,
+    hasFloorKey: false,
+    turnCount: 0,
+    turnAction: null as
+      | {
+          kind: 'step';
+          fromX: number;
+          fromY: number;
+          toX: number;
+          toY: number;
+          fromAngle: number;
+          targetAngle: number;
+          t: number;
+          duration: number;
+          isRetreat?: boolean;
+          retreatRoomId?: number;
+        }
+      | {
+          kind: 'attack';
+          fromAngle: number;
+          targetAngle: number;
+          targetFloorEnemyId?: string;
+          t: number;
+          duration: number;
+          struck: boolean;
+        }
+      | {
+          kind: 'wait' | 'rest';
+          t: number;
+          duration: number;
+        }
+      | null,
     explored: new Set<string>(),
     stepped: new Set<string>(),
     depth: new Map<string, number>(),
     exploreTarget: null as MazeCell | null,
     hero: { cx: 1, cy: 1, x: 1.5, y: 1.5, angle: 0 },
-    phase: 'decide' as 'decide' | 'turn' | 'step' | 'face',
-    moveFrom: null as MazeCell | null,
-    moveTo: null as MazeCell | null,
-    moveT: 0,
-    turnT: 0,
-    fromAngle: 0,
-    targetAngle: 0,
     path: null as MazeCell[] | null,
-    segs: null as SmoothSegment[] | null,
-    segIdx: 0,
-    segS: 0,
     enemyCell: null as MazeCell | null,
     enemyShake: 0,
-    dying: null as { icon: string; wx: number; wy: number; t: number } | null,
+    enemyFlashTimer: 0,
+    screenShake: 0,
+    heroHurtFlash: 0,
+    hitstopTimer: 0,
+    dying: null as { spriteId: SpriteKey; wx: number; wy: number; t: number; scale: number } | null,
     events: [] as MazeEvent[],
+    floorEnemies: [] as FloorEnemy[],
+    engagedCount: 0,
     floorStage: 0,
-    stepsSinceLastEncounter: 0,
+    palIdx: 0,
+    inSanctumFloor: false,
     bossSpawned: false,
     paused: false,
     speed: 1 as 1 | 2 | 4,
     moveStyle: 'smooth' as MoveStyle,
     sizeIdx: 0,
-    colStep: 1,
+    colStep: 2,
     palette: FLOOR_PALETTES[0] as FloorPalette,
 
-    battleMode: 'WALKING' as 'WALKING' | 'FIGHTING' | 'TRANSITION' | 'RECOVERING',
+    battleMode: 'WALKING' as 'WALKING' | 'FIGHTING' | 'RESTING' | 'TRANSITION' | 'RECOVERING',
     heroHp: 110,
-    heroAtkTimer: 0,
-    enemyAtkTimer: 0,
     rareEscapeTimer: 0,
     transTimer: 0,
     recoverTimer: 0,
@@ -196,11 +248,85 @@ export function DungeonViewport({
     enemy: null as Enemy | null,
   });
 
+  // Zero-GC pooled particle & canvas slash ring buffers
+  const fxPoolRef = useRef({
+    particles: Array.from({ length: 72 }, () => ({
+      active: false,
+      x: 0.5,
+      y: 0.5,
+      vx: 0,
+      vy: 0,
+      size: 4,
+      life: 0,
+      maxLife: 0.4,
+      color: '#fde047',
+    })),
+    pCursor: 0,
+    slashes: Array.from({ length: 8 }, () => ({
+      active: false,
+      x: 0.5,
+      y: 0.52,
+      angle: -0.6,
+      life: 0,
+      maxLife: 0.22,
+      color: '#ffffff',
+      accent: '#fde047',
+      thick: 4,
+    })),
+    sCursor: 0,
+  });
+
   const bannerTimersRef = useRef<{
     loot: ReturnType<typeof setTimeout> | null;
     promote: ReturnType<typeof setTimeout> | null;
     battle: ReturnType<typeof setTimeout> | null;
   }>({ loot: null, promote: null, battle: null });
+
+  const spawnCanvasParticles = (
+    nx: number,
+    ny: number,
+    count: number,
+    colors: string[],
+    speedScale = 1,
+  ) => {
+    const pool = fxPoolRef.current;
+    for (let i = 0; i < count; i++) {
+      const p = pool.particles[pool.pCursor];
+      pool.pCursor = (pool.pCursor + 1) % pool.particles.length;
+      const ang = rand(0, Math.PI * 2);
+      const spd = rand(0.14, 0.55) * speedScale;
+      p.active = true;
+      p.x = nx + rand(-0.04, 0.04);
+      p.y = ny + rand(-0.04, 0.04);
+      p.vx = Math.cos(ang) * spd;
+      p.vy = Math.sin(ang) * spd - 0.14 * speedScale;
+      p.size = Math.random() < 0.4 ? 5 : 3;
+      p.maxLife = rand(0.28, 0.55);
+      p.life = p.maxLife;
+      p.color = colors[i % colors.length];
+    }
+  };
+
+  const spawnCanvasSlash = (
+    nx: number,
+    ny: number,
+    angle: number,
+    tier: number,
+  ) => {
+    const pool = fxPoolRef.current;
+    const s = pool.slashes[pool.sCursor];
+    pool.sCursor = (pool.sCursor + 1) % pool.slashes.length;
+    s.active = true;
+    s.x = nx + rand(-0.03, 0.03);
+    s.y = ny + rand(-0.03, 0.03);
+    s.angle = angle;
+    s.maxLife = tier >= 2 ? 0.28 : 0.2;
+    s.life = s.maxLife;
+    s.color = '#ffffff';
+    s.accent =
+      tier >= 3 ? '#f472b6' : tier === 2 ? '#f87171' : tier === 1 ? '#fde047' : '#bae6fd';
+    s.thick = tier >= 2 ? 6 : 4;
+  };
 
   const spawnFloatText = (xPct: number, yPct: number, text: string, cls: string) => {
     const layer = fxLayerRef.current;
@@ -212,17 +338,6 @@ export function DungeonViewport({
     el.style.top = `${yPct}%`;
     layer.appendChild(el);
     setTimeout(() => el.remove(), 1250);
-  };
-
-  const spawnSlashFx = (xPct: number, yPct: number) => {
-    const layer = fxLayerRef.current;
-    if (!layer) return;
-    const el = document.createElement('div');
-    el.className = 'slash-fx';
-    el.style.left = `${xPct}%`;
-    el.style.top = `${yPct}%`;
-    layer.appendChild(el);
-    setTimeout(() => el.remove(), 220);
   };
 
   const triggerFrameFlash = (rarityId: number) => {
@@ -368,34 +483,40 @@ export function DungeonViewport({
       const h = sim.hero;
       const grid = sim.grid;
       if (!grid.length) return;
-      sim.explored.add(crawlKey(h.cx, h.cy));
-      for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-        const nx = h.cx + dx;
-        const ny = h.cy + dy;
-        if (nx >= 0 && ny >= 0 && nx < CRAWL_COLS && ny < CRAWL_ROWS) {
-          sim.explored.add(crawlKey(nx, ny));
-        }
+      if (sim.inSanctumFloor || !sim.rooms.length) {
+        sim.explored.add(crawlKey(h.cx, h.cy));
+        return;
       }
-      const ca = Math.cos(h.angle);
-      const sa = Math.sin(h.angle);
-      const fx = Math.abs(ca) >= Math.abs(sa) ? (ca >= 0 ? 1 : -1) : 0;
-      const fy = Math.abs(ca) >= Math.abs(sa) ? 0 : (sa >= 0 ? 1 : -1);
-      const px = -fy;
-      const py = fx;
-      for (const sd of [1, -1]) {
-        const tx = h.cx + fx + px * sd;
-        const ty = h.cy + fy + py * sd;
-        if (tx < 0 || ty < 0 || tx >= CRAWL_COLS || ty >= CRAWL_ROWS) continue;
-        const frontWall = grid[h.cy + fy]?.[h.cx + fx] === 1;
-        const sideWall = grid[h.cy + py * sd]?.[h.cx + px * sd] === 1;
-        if (frontWall && sideWall) continue;
-        sim.explored.add(crawlKey(tx, ty));
+
+      const { enteredRoomId } = revealDungeonTiles(
+        grid,
+        sim.roomGrid,
+        sim.rooms,
+        sim.explored,
+        h.cx,
+        h.cy,
+        h.angle,
+      );
+
+      if (enteredRoomId >= 0 && !sim.visitedRooms.has(enteredRoomId)) {
+        sim.visitedRooms.add(enteredRoomId);
+        sim.exploreTarget = null;
+        const room = sim.rooms[enteredRoomId];
+        if (room?.isMonsterHouse) {
+          const aliveInRoom = sim.floorEnemies.filter(
+            (e) => e.enemy.hp > 0 && e.roomId === enteredRoomId && !e.enemy.isBoss,
+          ).length;
+          if (aliveInRoom >= 2) {
+            showBattleBanner('⚠️ モンスターハウスだ！');
+            callbacksRef.current.onAddLog('⚠️ モンスターハウスに突入！', '#f472b6');
+          }
+        }
       }
     };
 
     const computeExploreHud = () => {
       const stairsFound = sim.explored.has(crawlKey(sim.stairs.x, sim.stairs.y));
-      let walkableTotal = Math.max(1, sim.depth.size);
+      const walkableTotal = Math.max(1, sim.depth.size);
       let walkableExplored = 0;
       for (const k of sim.depth.keys()) {
         if (sim.explored.has(k)) walkableExplored++;
@@ -408,14 +529,16 @@ export function DungeonViewport({
 
     const triggerMazeEvent = (ev: MazeEvent) => {
       const st = stateRef.current;
+      const stats = calcHeroStats(st.equipped, st.cleared100);
+
       if (ev.type === 'chest') {
-        const stoneGain = Math.max(3, Math.round((4 + st.stage * 1.5) * rand(0.9, 1.4)));
+        const stoneGain = Math.max(4, Math.round((5 + st.stage * 1.6) * rand(0.9, 1.4)));
         st.stones += stoneGain;
         const r = Math.random();
         let rar: 1 | 2 | 3 | 4 = 1;
-        if (st.cleared100 && r < 0.05) rar = 4;
-        else if (r < 0.24) rar = 3;
-        else if (r < 0.62) rar = 2;
+        if (st.cleared100 && r < 0.06) rar = 4;
+        else if (r < 0.26) rar = 3;
+        else if (r < 0.65) rar = 2;
 
         const it = generateItem({
           stage: st.stage,
@@ -423,10 +546,40 @@ export function DungeonViewport({
           isBoss: true,
           cleared100: st.cleared100,
         });
-        spawnFloatText(50, 42, `🎁 +${stoneGain}💎`, 'float-loot');
-        callbacksRef.current.onAddLog(`迷宮の黄金宝箱を開封！ (+${stoneGain}💎)`, '#fbbf24');
+        playSfx('drop', st.soundOn);
+        spawnFloatText(50, 40, `🎁 +${stoneGain}💎`, 'float-loot');
+        callbacksRef.current.onAddLog(`部屋の宝箱を開封！ (+${stoneGain}💎)`, '#fbbf24');
         callbacksRef.current.onItemDrop(it, false);
         if (it.rarity >= 3) showPromoteLootBanner(it);
+      } else if (ev.type === 'weapon' || ev.type === 'armor' || ev.type === 'accessory') {
+        const accPool = ['ring', 'necklace', 'gauntlets', 'boots'] as const;
+        const forcedSlot =
+          ev.type === 'accessory' ? accPool[Math.floor(Math.random() * accPool.length)] : ev.type;
+        const it = generateItem({
+          stage: st.stage,
+          forcedSlot,
+          isBoss: Math.random() < 0.3,
+          cleared100: st.cleared100,
+        });
+        playSfx('drop', st.soundOn);
+        spawnFloatText(50, 38, `${it.icon} ${RARITIES[it.rarity].name}`, 'float-loot');
+        callbacksRef.current.onItemDrop(it, false);
+        if (it.rarity >= 3 && it.rarity > st.autoSalvageRarity) {
+          showPromoteLootBanner(it);
+        }
+      } else if (ev.type === 'stones') {
+        const stoneGain = Math.max(6, Math.round((8 + st.stage * 2.2) * rand(0.9, 1.35)));
+        st.stones += stoneGain;
+        playSfx('drop', st.soundOn);
+        spawnFloatText(50, 42, `💎 +${fmt(stoneGain)}`, 'float-loot');
+        callbacksRef.current.onAddLog(`強化石の結晶を拾った！ (+${fmt(stoneGain)}💎)`, '#38bdf8');
+      } else if (ev.type === 'heal') {
+        const healAmt = Math.round(stats.hp * 0.38);
+        sim.heroHp = Math.min(stats.hp, sim.heroHp + healAmt);
+        playSfx('drop', st.soundOn);
+        spawnFloatText(34, 72, `💚 +${fmt(healAmt)}`, 'float-loot');
+        spawnCanvasParticles(0.5, 0.65, 10, ['#4ade80', '#86efac', '#ffffff'], 0.8);
+        callbacksRef.current.onAddLog(`💚 回復薬を拾ってHP回復！`, '#4ade80');
       }
     };
 
@@ -435,7 +588,7 @@ export function DungeonViewport({
       for (const ev of sim.events) {
         if (ev.triggered) continue;
         if (
-          Math.hypot(ev.x + 0.5 - h.x, ev.y + 0.5 - h.y) < 0.65 ||
+          Math.hypot(ev.x + 0.5 - h.x, ev.y + 0.5 - h.y) < 0.45 ||
           (h.cx === ev.x && h.cy === ev.y)
         ) {
           ev.triggered = true;
@@ -448,16 +601,29 @@ export function DungeonViewport({
       const st = stateRef.current;
       sim.floorStage = st.stage;
       sim.events = [];
+      sim.floorEnemies = [];
+      sim.engagedCount = 0;
+      sim.chokeHoldRoomId = null;
+      sim.chokeWaitTurns = 0;
+      sim.pendingRoomRetreat = null;
+      sim.monsterHouseRoomId = null;
+      sim.hasFloorKey = false;
+      sim.turnCount = 0;
+      sim.turnAction = null;
       sim.needNewFloor = false;
-      sim.stepsSinceLastEncounter = 0;
       st.floorEncounters = 0;
 
       const palIdx = Math.floor((st.stage - 1) / 100) % FLOOR_PALETTES.length;
+      sim.palIdx = palIdx;
+      sim.inSanctumFloor = isSanctumFloor(st.stage);
       sim.palette = FLOOR_PALETTES[palIdx];
 
       if (isSanctumFloor(st.stage)) {
         const chamber = generateSanctumChamber(CRAWL_COLS, CRAWL_ROWS);
         sim.grid = chamber.grid;
+        sim.roomGrid = [];
+        sim.rooms = [];
+        sim.visitedRooms = new Set();
         sim.stairs = chamber.stairs;
         sim.depth = chamber.depth;
         sim.explored = chamber.explored;
@@ -472,21 +638,20 @@ export function DungeonViewport({
 
         sim.dying = null;
         sim.bossSpawned = true;
+        sim.hasFloorKey = true;
         sim.enemy = createEnemy(st.stage, true);
         sim.enemyCell = { ...chamber.bossCell };
         sim.exploreTarget = { ...chamber.bossCell };
         sim.path = null;
-        sim.segs = null;
-        sim.segIdx = 0;
-        sim.segS = 0;
-        sim.phase = 'face';
+        sim.battleMode = 'FIGHTING';
+        sim.engagedCount = 1;
 
-        startFight();
         showBattleBanner(`🏛️ ${st.stage}F 玄室突入！大ボス戦！`);
         callbacksRef.current.onSyncHud({
           floorEncounters: 0,
           stepsToStairs: 2,
           stairsFound: true,
+          hasFloorKey: true,
           explorePct: 100,
           bossActive: true,
           moveStyle: sim.moveStyle,
@@ -498,40 +663,53 @@ export function DungeonViewport({
 
       sim.bossSpawned = false;
 
-      const { grid, stairs, depth } = generateMaze(CRAWL_COLS, CRAWL_ROWS);
-      sim.grid = grid;
-      sim.stairs = stairs;
-      sim.depth = depth;
+      const generated = generateMaze(CRAWL_COLS, CRAWL_ROWS, { stage: st.stage });
+      sim.grid = generated.grid;
+      sim.roomGrid = generated.roomGrid;
+      sim.rooms = generated.rooms;
+      sim.stairs = generated.stairs;
+      sim.depth = generated.depth;
+      sim.monsterHouseRoomId = generated.monsterHouseRoomId;
 
       const h = sim.hero;
-      h.cx = 1;
-      h.cy = 1;
-      h.x = 1.5;
-      h.y = 1.5;
+      h.cx = generated.spawn.x;
+      h.cy = generated.spawn.y;
+      h.x = h.cx + 0.5;
+      h.y = h.cy + 0.5;
       h.angle = 0;
 
-      sim.phase = 'decide';
       sim.dying = null;
       sim.enemyCell = null;
       sim.enemy = null;
+      sim.battleMode = 'WALKING';
       sim.explored = new Set();
-      sim.stepped = new Set([crawlKey(1, 1)]);
+      sim.visitedRooms = new Set([0]);
+      sim.stepped = new Set([crawlKey(h.cx, h.cy)]);
       sim.exploreTarget = null;
       sim.path = null;
-      sim.segs = null;
-      sim.segIdx = 0;
-      sim.segS = 0;
 
-      // 入口から進める最初の通路向きを初期角度に設定
-      for (const [dx, dy] of [[1, 0], [0, 1], [-1, 0], [0, -1]]) {
-        if (grid[1 + dy]?.[1 + dx] === 0) {
-          h.angle = Math.atan2(dy, dx);
-          break;
-        }
+      // 初期部屋の廊下出口側を正確な4方向で向く
+      const startRoom = sim.rooms[0];
+      if (startRoom && startRoom.entrances.length > 0) {
+        const ent = startRoom.entrances[0];
+        h.angle = cardinalAngleFromDelta(ent.x - h.cx, ent.y - h.cy);
       }
 
+      const fairyProfile = getFairyProfile(getFairyRank(st.maxStage, st.cleared100));
+      const stairsRoomId = sim.roomGrid[sim.stairs.y]?.[sim.stairs.x] ?? Math.max(0, sim.rooms.length - 1);
+      sim.events = placeMazeEvents(sim.depth, sim.stairs, Math.random, sim.rooms, generated.spawn);
+      sim.floorEnemies = placeDungeonEnemies({
+        stage: st.stage,
+        rooms: sim.rooms,
+        startRoomId: 0,
+        stairsRoomId,
+        stairs: sim.stairs,
+        spawn: generated.spawn,
+        rareSlimeBonusPct: fairyProfile.rareSlimeBonusPct,
+      });
+
       crawlReveal();
-      sim.events = placeMazeEvents(sim.depth, sim.stairs);
+
       const picked = pickExplorationTarget(
         sim.grid,
         h.cx,
@@ -541,11 +719,16 @@ export function DungeonViewport({
         sim.stepped,
         sim.stairs,
         sim.events,
+        Math.random,
+        sim.roomGrid,
+        sim.rooms,
+        sim.visitedRooms,
+        { hasFloorKey: sim.hasFloorKey, enemies: sim.floorEnemies },
       );
       sim.exploreTarget = picked.target;
-      sim.path = bfsPath(grid, h.cx, h.cy, picked.target.x, picked.target.y);
+      sim.path = findHeroSafePath(sim.grid, h.cx, h.cy, picked.target.x, picked.target.y, sim.floorEnemies);
       if (sim.path && sim.path.length > 1) {
-        h.angle = Math.atan2(sim.path[1].y - h.cy, sim.path[1].x - h.cx);
+        h.angle = cardinalAngleFromDelta(sim.path[1].x - h.cx, sim.path[1].y - h.cy);
       }
 
       const hudEx = computeExploreHud();
@@ -553,6 +736,7 @@ export function DungeonViewport({
         floorEncounters: 0,
         stepsToStairs: hudEx.stepsToStairs,
         stairsFound: hudEx.stairsFound,
+        hasFloorKey: false,
         explorePct: hudEx.explorePct,
         bossActive: false,
         moveStyle: sim.moveStyle,
@@ -561,390 +745,125 @@ export function DungeonViewport({
       });
     };
 
-    const startFight = () => {
-      sim.battleMode = 'FIGHTING';
-      const stats = calcHeroStats(stateRef.current.equipped, stateRef.current.cleared100);
-      sim.heroAtkTimer = (1 / stats.aspd) * 0.65;
-      sim.enemyAtkTimer = 0.4;
-      if (sim.enemy && sim.enemy.isRareEscape) {
-        sim.rareEscapeTimer = 10.0;
-      }
-      callbacksRef.current.onSyncHud({
-        bossActive: Boolean(sim.enemy?.isBoss),
-      });
-    };
-
-    /**
-     * タイル進入ごとに呼ばれる探索記録・階段発見切替・ランダムエンカウント＆階段ボス判定
-     */
-    const onEnterTile = (cx: number, cy: number): boolean => {
-      const st = stateRef.current;
-      sim.stepped.add(crawlKey(cx, cy));
-
-      // 既に敵が出現中なら何もしない
-      if (sim.enemy && sim.enemyCell) return false;
-
-      const distToStairs = Math.abs(sim.stairs.x - cx) + Math.abs(sim.stairs.y - cy);
-      if (distToStairs <= 1 && !sim.bossSpawned) {
-        // 階段到達でフロアボス出現
-        sim.bossSpawned = true;
-        sim.enemy = createEnemy(st.stage, true);
-        sim.enemyCell = { x: sim.stairs.x, y: sim.stairs.y };
-        sim.exploreTarget = { x: sim.stairs.x, y: sim.stairs.y };
-        sim.path = null;
-        sim.segs = null;
-        sim.segIdx = 0;
-        sim.segS = 0;
-        sim.phase = 'face';
-        const hudEx = computeExploreHud();
+    const syncFloorHud = (bossActive?: boolean) => {
+      if (sim.inSanctumFloor) {
         callbacksRef.current.onSyncHud({
-          stepsToStairs: distToStairs,
-          stairsFound: true,
-          explorePct: hudEx.explorePct,
-          bossActive: true,
+          bossActive: bossActive ?? Boolean(sim.enemy?.isBoss),
+          hasFloorKey: true,
         });
-        return true;
+        return;
       }
-
-      // 視界に階段や未回収イベントが入ったら探索ターゲットを切り替える
-      let redirected = false;
-      const stairsVisible = sim.explored.has(crawlKey(sim.stairs.x, sim.stairs.y));
-      if (stairsVisible && (!sim.exploreTarget || sim.exploreTarget.x !== sim.stairs.x || sim.exploreTarget.y !== sim.stairs.y)) {
-        sim.exploreTarget = { x: sim.stairs.x, y: sim.stairs.y };
-        sim.path = null;
-        sim.segs = null;
-        sim.segIdx = 0;
-        sim.segS = 0;
-        redirected = true;
-      } else if (!stairsVisible) {
-        const visibleEv = sim.events.find((ev) => !ev.triggered && sim.explored.has(crawlKey(ev.x, ev.y)));
-        if (visibleEv && (!sim.exploreTarget || sim.exploreTarget.x !== visibleEv.x || sim.exploreTarget.y !== visibleEv.y)) {
-          sim.exploreTarget = { x: visibleEv.x, y: visibleEv.y };
-          sim.path = null;
-          sim.segs = null;
-          sim.segIdx = 0;
-          sim.segS = 0;
-          redirected = true;
-        }
-      }
-
-      sim.stepsSinceLastEncounter += 1;
-      const pathToStairs = bfsPath(sim.grid, cx, cy, sim.stairs.x, sim.stairs.y);
-      const remainingToStairs = pathToStairs ? Math.max(0, pathToStairs.length - 1) : 0;
-
-      if (shouldTriggerRandomEncounter(sim.stepsSinceLastEncounter, remainingToStairs)) {
-        const navTarget = sim.exploreTarget ?? sim.stairs;
-        const forwardPath = bfsPath(sim.grid, cx, cy, navTarget.x, navTarget.y);
-        const enemyCell = pickEncounterAheadCell(
-          sim.grid,
-          cx,
-          cy,
-          sim.hero.angle,
-          forwardPath,
-          sim.stairs,
-          sim.speed >= 4,
-        );
-        if (enemyCell) {
-          sim.stepsSinceLastEncounter = 0;
-          const fairyProfile = getFairyProfile(getFairyRank(st.maxStage, st.cleared100));
-          sim.enemy = createEnemy(st.stage, false, fairyProfile.rareSlimeBonusPct);
-          sim.enemyCell = enemyCell;
-          sim.path = null;
-          sim.segs = null;
-          sim.segIdx = 0;
-          sim.segS = 0;
-          sim.phase = 'decide';
-          st.floorEncounters += 1;
-          const hudEx = computeExploreHud();
-          callbacksRef.current.onSyncHud({
-            floorEncounters: st.floorEncounters,
-            stepsToStairs: hudEx.stepsToStairs,
-            stairsFound: hudEx.stairsFound,
-            explorePct: hudEx.explorePct,
-            bossActive: false,
-          });
-          return true;
-        }
-      }
-
       const hudEx = computeExploreHud();
       callbacksRef.current.onSyncHud({
         stepsToStairs: hudEx.stepsToStairs,
         stairsFound: hudEx.stairsFound,
+        hasFloorKey: sim.hasFloorKey,
         explorePct: hudEx.explorePct,
+        bossActive: bossActive ?? Boolean(sim.enemy?.isBoss),
       });
-      return redirected;
+    };
+
+    const engageAdjacentIfAny = (): boolean => {
+      if (sim.inSanctumFloor) return false;
+      const h = sim.hero;
+      const engaged = getEngagedEnemies({ x: h.cx, y: h.cy }, sim.floorEnemies, h.angle);
+      if (engaged.length === 0) return false;
+
+      const lead = engaged[0];
+      sim.enemy = lead.enemy;
+      sim.enemyCell = { x: lead.x, y: lead.y };
+      sim.engagedCount = engaged.length;
+      if (lead.enemy.isBoss) sim.bossSpawned = true;
+      sim.battleMode = 'FIGHTING';
+      return true;
+    };
+
+    const descendStairs = () => {
+      const st = stateRef.current;
+      const prevStage = st.stage;
+      const prog = resolveBossVictoryProgression(st);
+      st.clearedSanctumMax = prog.nextClearedSanctumMax;
+      st.maxStage = prog.nextMaxStage;
+      st.stage = prog.nextStage;
+      st.floorEncounters = 0;
+      sim.needNewFloor = true;
+
+      if (prog.sanctumCleared) {
+        callbacksRef.current.onAddLog(
+          `🏛️ ${prog.sanctumCleared}F玄室制覇！${st.stage}Fへ進出！`,
+          '#4ade80',
+        );
+      } else if (prog.heldAtGate) {
+        callbacksRef.current.onAddLog(
+          `⛩️ ${prevStage}F突破！${prevStage + 1}F玄室が開放（大ボス討伐まで${prevStage}Fを周回待機）`,
+          '#fbbf24',
+        );
+      } else {
+        callbacksRef.current.onAddLog(`🪜 階段を降りてステージ${st.stage}へ！`, '#fbbf24');
+      }
+
+      sim.enemy = null;
+      sim.enemyCell = null;
+      sim.engagedCount = 0;
+      sim.path = null;
+      sim.turnAction = null;
+      sim.battleMode = 'TRANSITION';
+      sim.transTimer = 0.55;
+      syncFloorHud(false);
     };
 
     const getNavTarget = (): MazeCell => {
-      if (sim.enemy && sim.enemyCell) return sim.enemyCell;
       const h = sim.hero;
-      if (!sim.exploreTarget || (sim.exploreTarget.x === h.cx && sim.exploreTarget.y === h.cy)) {
-        const picked = pickExplorationTarget(
-          sim.grid,
-          h.cx,
-          h.cy,
-          h.angle,
-          sim.explored,
-          sim.stepped,
-          sim.stairs,
-          sim.events,
-        );
-        sim.exploreTarget = picked.target;
+      const heroRoomId = sim.roomGrid[h.cy]?.[h.cx] ?? -1;
+
+      if (!sim.inSanctumFloor) {
+        if (sim.hasFloorKey && sim.explored.has(crawlKey(sim.stairs.x, sim.stairs.y))) {
+          sim.exploreTarget = { x: sim.stairs.x, y: sim.stairs.y };
+          return sim.exploreTarget;
+        }
+
+        // 同室内にいる敵、または既に覚醒した敵（鍵持ち含む）をアイテムより優先して倒す
+        const roomEnemies = sim.floorEnemies
+          .filter(
+            (e) =>
+              e.enemy.hp > 0 &&
+              (e.awakened || (heroRoomId >= 0 && e.roomId === heroRoomId)),
+          )
+          .sort(
+            (a, b) =>
+              Math.abs(a.x - h.cx) + Math.abs(a.y - h.cy) - (Math.abs(b.x - h.cx) + Math.abs(b.y - h.cy)),
+          );
+        if (roomEnemies.length > 0) {
+          return { x: roomEnemies[0].x, y: roomEnemies[0].y };
+        }
       }
+
+      const picked = pickExplorationTarget(
+        sim.grid,
+        h.cx,
+        h.cy,
+        h.angle,
+        sim.explored,
+        sim.stepped,
+        sim.stairs,
+        sim.events,
+        Math.random,
+        sim.roomGrid,
+        sim.rooms,
+        sim.visitedRooms,
+        { hasFloorKey: sim.hasFloorKey, enemies: sim.floorEnemies },
+      );
+      sim.exploreTarget = picked.target;
       return sim.exploreTarget;
     };
 
-    const decideStep = () => {
-      const h = sim.hero;
-      const target = getNavTarget();
-      const dx = target.x - h.cx;
-      const dy = target.y - h.cy;
-
-      if (sim.enemy && sim.enemyCell && dx === 0 && dy === 0) {
-        startFight();
-        return;
-      }
-
-      if (Math.abs(dx) + Math.abs(dy) === 1) {
-        if (sim.enemy && sim.enemyCell) {
-          sim.targetAngle = Math.atan2(dy, dx);
-          sim.fromAngle = h.angle;
-          sim.turnT = 0;
-          if (Math.abs(angDiff(sim.targetAngle, sim.fromAngle)) < 0.001) {
-            startFight();
-          } else {
-            sim.phase = 'face';
-          }
-          return;
-        }
-        if (target.x === sim.stairs.x && target.y === sim.stairs.y && !sim.bossSpawned) {
-          onEnterTile(h.cx, h.cy);
-          return;
-        }
-      }
-
-      if (!sim.path || sim.path.length < 2) {
-        sim.path = bfsPath(sim.grid, h.cx, h.cy, target.x, target.y);
-      }
-      if (!sim.path || sim.path.length < 2) {
-        sim.exploreTarget = null;
-        return;
-      }
-
-      sim.moveFrom = { x: h.cx, y: h.cy };
-      sim.moveTo = sim.path[1];
-      sim.path = sim.path.slice(1);
-      sim.targetAngle = Math.atan2(sim.moveTo.y - h.cy, sim.moveTo.x - h.cx);
-      sim.fromAngle = h.angle;
-      sim.turnT = 0;
-      if (Math.abs(angDiff(sim.targetAngle, sim.fromAngle)) < 0.001) {
-        sim.phase = 'step';
-        sim.moveT = 0;
-      } else {
-        sim.phase = 'turn';
-      }
-    };
-
-    const crawlWalk = (dt: number) => {
-      const h = sim.hero;
-
-      if (sim.moveStyle === 'step') {
-        const snapRate = sim.speed === 1 ? 1.15 : sim.speed === 2 ? 2.0 : 3.0;
-        const mdt = dt * snapRate;
-        if (sim.phase === 'turn' || sim.phase === 'face') {
-          sim.turnT += mdt;
-          if (sim.turnT >= 0.17) {
-            h.angle = sim.targetAngle;
-            if (sim.phase === 'turn') {
-              sim.phase = 'step';
-              sim.moveT = 0;
-              crawlReveal();
-            } else if (sim.enemy && sim.enemyCell) {
-              startFight();
-            } else {
-              sim.phase = 'decide';
-            }
-          }
-          return;
-        }
-        if (sim.phase === 'step' && sim.moveTo) {
-          sim.moveT += mdt;
-          if (sim.moveT >= 0.24) {
-            h.cx = sim.moveTo.x;
-            h.cy = sim.moveTo.y;
-            h.x = h.cx + 0.5;
-            h.y = h.cy + 0.5;
-            sim.phase = 'decide';
-            crawlReveal();
-            checkPathEvents();
-            onEnterTile(h.cx, h.cy);
-            decideStep();
-          }
-          return;
-        }
-        decideStep();
-        return;
-      }
-
-      // Smooth arc cornering movement
-      const target = getNavTarget();
-      const isCombatTarget = Boolean(sim.enemy && sim.enemyCell);
-      const moveSpeed = sim.speed === 1 ? 2.6 : sim.speed === 2 ? 3.8 : 5.0;
-      const maxTurnRate = sim.speed === 1 ? 5.6 : sim.speed === 2 ? 7.8 : 9.6;
-
-      if (sim.phase === 'face') {
-        if (!isCombatTarget) {
-          sim.phase = 'decide';
-          return;
-        }
-        const targetAngle = Math.atan2(target.y + 0.5 - h.y, target.x + 0.5 - h.x);
-        const diff = angDiff(targetAngle, h.angle);
-        const stepAng = maxTurnRate * dt;
-        if (Math.abs(diff) <= stepAng) {
-          h.angle = targetAngle;
-          startFight();
-        } else {
-          h.angle += Math.sign(diff) * stepAng;
-        }
-        return;
-      }
-
-      if (!sim.path) {
-        sim.path = bfsPath(sim.grid, h.cx, h.cy, target.x, target.y);
-        sim.segs = null;
-        sim.segIdx = 0;
-        sim.segS = 0;
-      }
-      if (!sim.path || sim.path.length < 2) {
-        if (isCombatTarget) {
-          sim.phase = 'face';
-        } else {
-          sim.exploreTarget = null;
-          sim.path = null;
-          sim.segs = null;
-          sim.phase = 'decide';
-        }
-        return;
-      }
-
-      const goalIdx = isCombatTarget ? sim.path.length - 2 : sim.path.length - 1;
-      if (goalIdx < 1) {
-        const goalTile = sim.path[0];
-        h.cx = goalTile.x;
-        h.cy = goalTile.y;
-        h.x = goalTile.x + 0.5;
-        h.y = goalTile.y + 0.5;
-        crawlReveal();
-        checkPathEvents();
-        onEnterTile(h.cx, h.cy);
-        if (sim.enemy && sim.enemyCell) {
-          sim.phase = 'face';
-        } else {
-          sim.exploreTarget = null;
-          sim.path = null;
-          sim.segs = null;
-          sim.phase = 'decide';
-        }
-        return;
-      }
-
-      if (!sim.segs) {
-        sim.segs = buildSmoothSegments(sim.path, goalIdx, h.x, h.y, 0.42);
-        sim.segIdx = 0;
-        sim.segS = 0;
-        if (!sim.segs.length) {
-          if (isCombatTarget) {
-            sim.phase = 'face';
-          } else {
-            sim.exploreTarget = null;
-            sim.path = null;
-            sim.phase = 'decide';
-          }
-          return;
-        }
-      }
-
-      if (sim.segIdx === 0 && sim.segS === 0) {
-        const firstSeg = sim.segs[0];
-        const startAng =
-          firstSeg.type === 'line'
-            ? firstSeg.ang
-            : firstSeg.a0 + (firstSeg.da > 0 ? Math.PI / 2 : -Math.PI / 2);
-        const diff = angDiff(startAng, h.angle);
-        if (Math.abs(diff) > 0.03) {
-          const stepAng = maxTurnRate * 1.15 * dt;
-          if (Math.abs(diff) <= stepAng) {
-            h.angle = startAng;
-          } else {
-            h.angle += Math.sign(diff) * stepAng;
-            return;
-          }
-        } else {
-          h.angle = startAng;
-        }
-      }
-
-      let remDt = dt;
-      while (remDt > 1e-6 && sim.segs && sim.segIdx < sim.segs.length) {
-        const seg = sim.segs[sim.segIdx];
-        const spd = seg.type === 'line' ? moveSpeed : Math.min(moveSpeed, maxTurnRate * seg.r);
-        const remLen = seg.len - sim.segS;
-        const needDt = remLen / spd;
-        if (remDt >= needDt) {
-          remDt -= needDt;
-          sim.segS = seg.len;
-          evalSmoothSeg(seg, seg.len, h);
-          sim.segIdx += 1;
-          sim.segS = 0;
-        } else {
-          sim.segS += spd * remDt;
-          remDt = 0;
-          evalSmoothSeg(seg, sim.segS, h);
-        }
-
-        const ncx = clamp(Math.floor(h.x), 1, CRAWL_COLS - 2);
-        const ncy = clamp(Math.floor(h.y), 1, CRAWL_ROWS - 2);
-        if (ncx !== h.cx || ncy !== h.cy) {
-          h.cx = ncx;
-          h.cy = ncy;
-          crawlReveal();
-          checkPathEvents();
-          const interrupted = onEnterTile(ncx, ncy);
-          if (interrupted) {
-            break;
-          }
-        }
-      }
-
-      if (sim.segs && sim.segIdx >= sim.segs.length && sim.path) {
-        const goalTile = sim.path[goalIdx];
-        h.cx = goalTile.x;
-        h.cy = goalTile.y;
-        h.x = goalTile.x + 0.5;
-        h.y = goalTile.y + 0.5;
-        crawlReveal();
-        checkPathEvents();
-        onEnterTile(h.cx, h.cy);
-        if (sim.enemy && sim.enemyCell) {
-          sim.phase = 'face';
-        } else {
-          sim.exploreTarget = null;
-          sim.path = null;
-          sim.segs = null;
-          sim.segIdx = 0;
-          sim.segS = 0;
-          sim.phase = 'decide';
-        }
-      }
-    };
-
-    const handleEnemyDefeated = () => {
-      const enemy = sim.enemy;
+    const handleEnemyDefeated = (defeatedFloorEnemy?: FloorEnemy) => {
+      const enemy = defeatedFloorEnemy ? defeatedFloorEnemy.enemy : sim.enemy;
       if (!enemy) return;
       const st = stateRef.current;
       const isBoss = enemy.isBoss;
       st.kills += 1;
+      if (!isBoss) st.floorEncounters += 1;
 
       const fairyProfile = getFairyProfile(getFairyRank(st.maxStage, st.cleared100));
       const activeBuff = getActiveFairyBuff(st.fairy);
@@ -1046,60 +965,107 @@ export function DungeonViewport({
       }
 
       const heroStats = calcHeroStats(st.equipped, st.cleared100);
-      sim.heroHp = Math.min(heroStats.hp, sim.heroHp + heroStats.hp * 0.2);
+      sim.heroHp = Math.min(heroStats.hp, sim.heroHp + heroStats.hp * 0.12);
 
-      if (sim.enemyCell) {
+      const deathWx = defeatedFloorEnemy ? defeatedFloorEnemy.x + 0.5 : sim.enemyCell ? sim.enemyCell.x + 0.5 : null;
+      const deathWy = defeatedFloorEnemy ? defeatedFloorEnemy.y + 0.5 : sim.enemyCell ? sim.enemyCell.y + 0.5 : null;
+      if (deathWx !== null && deathWy !== null) {
         sim.dying = {
-          icon: enemy.icon,
-          wx: sim.enemyCell.x + 0.5,
-          wy: sim.enemyCell.y + 0.5,
-          t: 0.45,
+          spriteId: enemy.spriteId,
+          wx: deathWx,
+          wy: deathWy,
+          t: 0.48,
+          scale: enemy.isSanctumBoss ? 1.45 : enemy.isBoss ? 1.25 : 0.95,
         };
       }
-
-      sim.enemy = null;
-      sim.enemyCell = null;
-      sim.path = null;
-      sim.segs = null;
-      sim.phase = 'decide';
-
-      if (isBoss) {
-        const prevStage = st.stage;
-        const prog = resolveBossVictoryProgression(st);
-        st.clearedSanctumMax = prog.nextClearedSanctumMax;
-        st.maxStage = prog.nextMaxStage;
-        st.stage = prog.nextStage;
-        st.floorEncounters = 0;
-        sim.needNewFloor = true;
-
-        if (prog.sanctumCleared) {
-          callbacksRef.current.onAddLog(
-            `🏛️ ${prog.sanctumCleared}F玄室制覇！${st.stage}Fへ進出！`,
-            '#4ade80',
-          );
-        } else if (prog.heldAtGate) {
-          callbacksRef.current.onAddLog(
-            `⛩️ ${prevStage}F突破！${prevStage + 1}F玄室が開放（大ボス討伐まで${prevStage}Fを周回待機）`,
-            '#fbbf24',
-          );
-        } else if (!enemy.isMidBoss) {
-          callbacksRef.current.onAddLog(`ステージ${prevStage} ボス撃破！ (📦+1)`, '#fbbf24');
-        }
+      spawnCanvasParticles(
+        0.5,
+        0.5,
+        enemy.isBoss ? 26 : 16,
+        enemy.isGreatDemon
+          ? ['#f472b6', '#fde047', '#38bdf8', '#ffffff']
+          : enemy.isBoss
+            ? ['#fbbf24', '#f97316', '#ffffff']
+            : ['#94a3b8', '#fde047', '#ffffff'],
+        enemy.isBoss ? 1.45 : 1.1,
+      );
+      if (enemy.isBoss) {
+        sim.screenShake = Math.max(sim.screenShake, 0.28);
+        sim.hitstopTimer = Math.max(sim.hitstopTimer, 0.05);
       }
 
       const reduceSec = FAIRY_KILL_REDUCE_SEC + (isBoss ? FAIRY_FLOOR_REDUCE_SEC : 0);
       advanceFairyCooldown(st.fairy, reduceSec, fairyProfile.maxGifts);
 
-      sim.battleMode = 'TRANSITION';
-      sim.transTimer = isBoss ? 0.55 : 0.35;
-      const hudEx = computeExploreHud();
-      callbacksRef.current.onSyncHud({
-        bossActive: false,
-        floorEncounters: st.floorEncounters,
-        stepsToStairs: hudEx.stepsToStairs,
-        stairsFound: hudEx.stairsFound,
-        explorePct: hudEx.explorePct,
-      });
+      if (isBoss) {
+        if (sim.inSanctumFloor || enemy.isSanctumBoss) {
+          const prog = resolveBossVictoryProgression(st);
+          st.clearedSanctumMax = prog.nextClearedSanctumMax;
+          st.maxStage = prog.nextMaxStage;
+          st.stage = prog.nextStage;
+          st.floorEncounters = 0;
+          sim.needNewFloor = true;
+
+          if (prog.sanctumCleared) {
+            callbacksRef.current.onAddLog(
+              `🏛️ ${prog.sanctumCleared}F玄室制覇！${st.stage}Fへ進出！`,
+              '#4ade80',
+            );
+          }
+
+          sim.enemy = null;
+          sim.enemyCell = null;
+          sim.engagedCount = 0;
+          sim.path = null;
+          sim.turnAction = null;
+          sim.battleMode = 'TRANSITION';
+          sim.transTimer = 0.55;
+          syncFloorHud(false);
+          return;
+        }
+
+        // 通常階層：鍵持ちボス撃破で階層の鍵を獲得し、階段の封印を解く（この場では次階へワープしない）
+        sim.hasFloorKey = true;
+        sim.exploreTarget = null;
+        sim.path = null;
+        if (!enemy.isMidBoss) {
+          callbacksRef.current.onAddLog(
+            `🔑 ${enemy.name}を撃破！階層の鍵を入手！(📦+1)`,
+            '#fbbf24',
+          );
+        } else {
+          callbacksRef.current.onAddLog('🔑 階層の鍵を入手！階段の封印が解かれた！', '#fbbf24');
+        }
+        showLootBanner('🔑 階層の鍵を入手！階段の封印が解かれた！', '#fbbf24', false);
+      }
+
+      // 撃破時：他にも隣接している敵がいれば交戦対象を引き継ぐ
+      if (!sim.inSanctumFloor) {
+        const nextEngaged = getEngagedEnemies({ x: sim.hero.cx, y: sim.hero.cy }, sim.floorEnemies, sim.hero.angle);
+        if (nextEngaged.length > 0) {
+          const lead = nextEngaged[0];
+          sim.enemy = lead.enemy;
+          sim.enemyCell = { x: lead.x, y: lead.y };
+          sim.engagedCount = nextEngaged.length;
+          sim.battleMode = 'FIGHTING';
+          syncFloorHud(Boolean(lead.enemy.isBoss));
+          return;
+        }
+      }
+
+      sim.enemy = null;
+      sim.enemyCell = null;
+      sim.engagedCount = 0;
+      sim.path = null;
+      sim.exploreTarget = null;
+
+      if (!sim.inSanctumFloor && sim.chokeHoldRoomId === null && shouldEnterRestMode(sim.heroHp, heroStats.hp)) {
+        sim.battleMode = 'RESTING';
+      } else {
+        sim.battleMode = 'WALKING';
+      }
+
+      syncFloorHud(false);
     };
 
     const rollSingleHitDamage = (
@@ -1130,158 +1096,557 @@ export function DungeonViewport({
         heroHpBarRef.current.style.width = `${pct}%`;
       }
       if (heroHpTextRef.current) {
-        heroHpTextRef.current.textContent = `HP ${fmt(sim.heroHp)} / ${fmt(stats.hp)}`;
+        heroHpTextRef.current.textContent =
+          sim.battleMode === 'RESTING'
+            ? `💚 回復中 HP ${fmt(sim.heroHp)} / ${fmt(stats.hp)}`
+            : `HP ${fmt(sim.heroHp)} / ${fmt(stats.hp)}`;
       }
+    };
+
+    const triggerHeroDefeat = () => {
+      const st = stateRef.current;
+      sim.heroHp = 0;
+      sim.battleMode = 'RECOVERING';
+      sim.recoverTimer = 1.1;
+      sim.chokeHoldRoomId = null;
+      sim.pendingRoomRetreat = null;
+      sim.turnAction = null;
+      const wasSanctum = isSanctumFloor(st.stage);
+      const failedStage = st.stage;
+      const retreatStage = resolveDefeatRetreatStage(st.stage);
+      st.stage = retreatStage;
+      if (wasSanctum) {
+        showBattleBanner(`💀 ${failedStage}F玄室で敗退… ${retreatStage}Fへ撤退`);
+        callbacksRef.current.onAddLog(
+          `💀 ${failedStage}F玄室の大ボスに敗北！${retreatStage}Fで装備を整えよう`,
+          '#f87171',
+        );
+      } else if (retreatStage < failedStage) {
+        showBattleBanner(`撤退！ステージ${st.stage}で態勢を立て直す`);
+        callbacksRef.current.onAddLog(`敗北によりステージ${st.stage}へ撤退しました`, '#f87171');
+      } else {
+        showBattleBanner('体勢を立て直した！');
+      }
+      sim.needNewFloor = true;
+      callbacksRef.current.onSyncHud({ bossActive: false });
+    };
+
+    const executeHeroAttack = (targetFloorEnemy?: FloorEnemy | null): boolean => {
+      const st = stateRef.current;
+      const stats = calcHeroStats(st.equipped, st.cleared100);
+      const targetEnemy = targetFloorEnemy ? targetFloorEnemy.enemy : sim.enemy;
+      if (!targetEnemy || targetEnemy.hp <= 0) return false;
+
+      const res = rollSingleHitDamage(stats, 1.0, targetEnemy.isBoss, targetEnemy.defRate);
+      const maxTier = res.tier;
+      if (res.dmg > st.maxDmg) {
+        st.maxDmg = res.dmg;
+        callbacksRef.current.onSyncHud({});
+      }
+      const label =
+        res.tier === 3
+          ? `🌈極${fmt(res.dmg)}!!!`
+          : res.tier === 2
+            ? `🔥超${fmt(res.dmg)}!!`
+            : res.tier === 1
+              ? `⚡${fmt(res.dmg)}!`
+              : fmt(res.dmg);
+      const cls =
+        res.tier === 3
+          ? 'float-hyper-crit'
+          : res.tier === 2
+            ? 'float-super-crit'
+            : res.tier === 1
+              ? 'float-crit'
+              : 'float-dmg';
+      spawnFloatText(50, 34, label, cls);
+
+      targetEnemy.hp -= res.dmg;
+      if (targetFloorEnemy) {
+        targetFloorEnemy.shake = 0.18;
+        targetFloorEnemy.flashTimer = 0.065;
+      }
+      sim.enemyShake = 0.18;
+      sim.enemyFlashTimer = 0.065;
+      const slashAngles = maxTier >= 2 ? [-0.62, 0.62] : [-0.62];
+      for (const ang of slashAngles) {
+        spawnCanvasSlash(0.5, 0.51, ang, maxTier);
+      }
+      spawnCanvasParticles(
+        0.5,
+        0.5,
+        maxTier >= 2 ? 14 : maxTier === 1 ? 9 : 5,
+        maxTier >= 3
+          ? ['#f472b6', '#fde047', '#38bdf8', '#4ade80']
+          : maxTier === 2
+            ? ['#ef4444', '#fb923c', '#fde047']
+            : maxTier === 1
+              ? ['#fde047', '#ffffff']
+              : ['#e2e8f0', '#93c5fd'],
+        maxTier >= 1 ? 1.15 : 0.8,
+      );
+      if (maxTier >= 1) sim.screenShake = Math.max(sim.screenShake, maxTier >= 2 ? 0.22 : 0.12);
+      if (maxTier >= 2) sim.hitstopTimer = Math.max(sim.hitstopTimer, 0.035);
+      playSfx(maxTier >= 1 ? 'crit' : 'hit', st.soundOn);
+
+      if (targetEnemy.hp <= 0) {
+        targetEnemy.hp = 0;
+        handleEnemyDefeated(targetFloorEnemy ?? undefined);
+      }
+      return sim.battleMode === 'TRANSITION';
+    };
+
+    const runEnemyTurn = () => {
+      if (sim.battleMode === 'TRANSITION' || sim.battleMode === 'RECOVERING') return;
+      sim.turnCount += 1;
+
+      if (sim.inSanctumFloor) {
+        if (!sim.enemy || sim.enemy.hp <= 0) return;
+        const eDmg = Math.max(1, Math.round(sim.enemy.atk * rand(0.9, 1.1)));
+        sim.heroHp -= eDmg;
+        sim.heroHurtFlash = 0.22;
+        sim.screenShake = Math.max(sim.screenShake, 0.16);
+        spawnFloatText(34, 78, `-${fmt(eDmg)}`, 'float-hero-dmg');
+        if (sim.heroHp <= 0) {
+          triggerHeroDefeat();
+        }
+        return;
+      }
+
+      const h = sim.hero;
+      const adjacentNow = getEngagedEnemies({ x: h.cx, y: h.cy }, sim.floorEnemies, h.angle);
+      const adjacentSet = new Set(adjacentNow);
+
+      // 1) 隣接中の敵が1回ずつ攻撃（鍵持ちボスは2ターンに1回行動）
+      for (const fe of adjacentNow) {
+        if (fe.enemy.hp <= 0) continue;
+        if ((fe.enemy.isKeyKeeper || fe.enemy.isBoss) && sim.turnCount % 2 !== 0) {
+          continue;
+        }
+        const eDmg = Math.max(1, Math.round(fe.enemy.atk * rand(0.9, 1.1)));
+        sim.heroHp -= eDmg;
+        sim.heroHurtFlash = 0.22;
+        if (fe.enemy.isBoss) {
+          sim.screenShake = Math.max(sim.screenShake, 0.16);
+        }
+        spawnFloatText(34, 78, `-${fmt(eDmg)}`, 'float-hero-dmg');
+        if (sim.heroHp <= 0) {
+          triggerHeroDefeat();
+          return;
+        }
+      }
+
+      // 2) 非隣接の覚醒敵（毎ターン）および鍵持ちボス（2ターンに1回）が1歩移動
+      stepEnemiesTowardHero(
+        sim.grid,
+        sim.roomGrid,
+        { x: h.cx, y: h.cy },
+        sim.stairs,
+        sim.floorEnemies,
+        sim.turnCount,
+      );
+
+      // 3) はぐれ黄金スライムのターン経過逃走
+      for (const fe of sim.floorEnemies) {
+        if (fe.enemy.hp <= 0 || !fe.enemy.isRareEscape) continue;
+        if (!fe.awakened && !adjacentSet.has(fe)) continue;
+        fe.rareEscapeTimer -= 1;
+        if (fe.rareEscapeTimer <= 0) {
+          fe.enemy.hp = 0;
+          callbacksRef.current.onAddLog('💨 はぐれ黄金スライムは逃げ出した…', '#94a3b8');
+          showBattleBanner('💨 逃げられた！（ペナルティなし）');
+          if (sim.enemy === fe.enemy) {
+            sim.enemy = null;
+            sim.enemyCell = null;
+          }
+        }
+      }
+
+      // 4) 敵ターン後に隣接した敵がいれば戦闘態勢へ
+      if (!engageAdjacentIfAny()) {
+        sim.enemy = null;
+        sim.enemyCell = null;
+        sim.engagedCount = 0;
+      }
+      syncFloorHud();
+    };
+
+    const beginNextTurn = () => {
+      const st = stateRef.current;
+      const stats = calcHeroStats(st.equipped, st.cleared100);
+      const h = sim.hero;
+      h.x = h.cx + 0.5;
+      h.y = h.cy + 0.5;
+      h.angle = snapCardinalAngle(h.angle);
+
+      const speedScale = sim.speed === 1 ? 1.0 : sim.speed === 2 ? 1.85 : 3.1;
+      const activeBuff = getActiveFairyBuff(st.fairy);
+      const exploreMult =
+        activeBuff?.kind === 'explore'
+          ? 1 + getFairyProfile(getFairyRank(st.maxStage, st.cleared100)).buffExplorePct / 100
+          : 1;
+
+      if (sim.inSanctumFloor) {
+        if (sim.enemy && sim.enemy.hp > 0 && sim.enemyCell) {
+          sim.battleMode = 'FIGHTING';
+          const targetAngle = cardinalAngleFromDelta(sim.enemyCell.x - h.cx, sim.enemyCell.y - h.cy);
+          sim.turnAction = {
+            kind: 'attack',
+            fromAngle: h.angle,
+            targetAngle,
+            t: 0,
+            duration: 0.28 / speedScale,
+            struck: false,
+          };
+        }
+        return;
+      }
+
+      if (sim.battleMode === 'RESTING') {
+        if (engageAdjacentIfAny()) {
+          // 回復中に敵が隣接したら即反撃へ
+        } else if (!shouldExitRestMode(sim.heroHp, stats.hp)) {
+          sim.turnAction = {
+            kind: 'rest',
+            t: 0,
+            duration: 0.34 / (speedScale * exploreMult),
+          };
+          return;
+        } else {
+          sim.battleMode = 'WALKING';
+        }
+      }
+
+      // 前ターンで複数敵の部屋に入ったばかりなら、1歩後ろの通路入口へ退避して1対1を作る
+      if (sim.pendingRoomRetreat) {
+        const ret = sim.pendingRoomRetreat;
+        sim.pendingRoomRetreat = null;
+        const cellOccupied = sim.floorEnemies.some(
+          (e) => e.enemy.hp > 0 && e.x === ret.retreatCell.x && e.y === ret.retreatCell.y,
+        );
+        if (!cellOccupied && shouldRetreatInRoom(sim.floorEnemies, ret.roomId)) {
+          sim.battleMode = 'WALKING';
+          sim.turnAction = {
+            kind: 'step',
+            fromX: h.cx,
+            fromY: h.cy,
+            toX: ret.retreatCell.x,
+            toY: ret.retreatCell.y,
+            fromAngle: h.angle,
+            targetAngle: snapCardinalAngle(ret.faceAngle),
+            t: 0,
+            duration: (sim.moveStyle === 'step' ? 0.2 : 0.24) / (speedScale * exploreMult),
+            isRetreat: true,
+            retreatRoomId: ret.roomId,
+          };
+          return;
+        }
+      }
+
+      // 隣接敵がいれば正面を正確な4方向に合わせて1回攻撃
+      const engaged = getEngagedEnemies({ x: h.cx, y: h.cy }, sim.floorEnemies, h.angle);
+      if (engaged.length > 0) {
+        const lead = engaged[0];
+        sim.enemy = lead.enemy;
+        sim.enemyCell = { x: lead.x, y: lead.y };
+        sim.engagedCount = engaged.length;
+        if (lead.enemy.isBoss) sim.bossSpawned = true;
+        sim.battleMode = 'FIGHTING';
+        const targetAngle = cardinalAngleFromDelta(lead.x - h.cx, lead.y - h.cy);
+        syncFloorHud(Boolean(lead.enemy.isBoss));
+        sim.turnAction = {
+          kind: 'attack',
+          fromAngle: h.angle,
+          targetAngle,
+          targetFloorEnemyId: lead.id,
+          t: 0,
+          duration: 0.26 / speedScale,
+          struck: false,
+        };
+        return;
+      }
+
+      sim.enemy = null;
+      sim.enemyCell = null;
+      sim.engagedCount = 0;
+      sim.battleMode = 'WALKING';
+
+      // 通路引き待機中：同室の非ボス敵が入口へ来るのを1ターンずつ待機
+      if (sim.chokeHoldRoomId !== null) {
+        const holdAlive = sim.floorEnemies.some(
+          (e) => e.enemy.hp > 0 && !e.enemy.isBoss && e.roomId === sim.chokeHoldRoomId,
+        );
+        if (holdAlive && sim.chokeWaitTurns < 8) {
+          sim.chokeWaitTurns += 1;
+          sim.turnAction = {
+            kind: 'wait',
+            t: 0,
+            duration: 0.26 / (speedScale * exploreMult),
+          };
+          return;
+        }
+        sim.chokeHoldRoomId = null;
+        sim.chokeWaitTurns = 0;
+        sim.exploreTarget = null;
+        sim.path = null;
+      }
+
+      // 次の移動先を決定して1マス歩行ターンを開始
+      if (sim.hasFloorKey && h.cx === sim.stairs.x && h.cy === sim.stairs.y) {
+        descendStairs();
+        return;
+      }
+      const target = getNavTarget();
+      if (sim.path && sim.path.length > 0) {
+        const end = sim.path[sim.path.length - 1];
+        if (end.x !== target.x || end.y !== target.y || sim.path[0].x !== h.cx || sim.path[0].y !== h.cy) {
+          sim.path = null;
+        }
+      }
+      if (!sim.path || sim.path.length < 2) {
+        sim.path = findHeroSafePath(sim.grid, h.cx, h.cy, target.x, target.y, sim.floorEnemies);
+      }
+      if (!sim.path || sim.path.length < 2) {
+        sim.exploreTarget = null;
+        sim.path = null;
+        sim.turnAction = {
+          kind: 'wait',
+          t: 0,
+          duration: 0.22 / (speedScale * exploreMult),
+        };
+        return;
+      }
+
+      const nextCell = sim.path[1];
+      sim.path = sim.path.slice(1);
+
+      // 敵が移動先を塞いでいる場合は再計算/待機
+      const blocker = sim.floorEnemies.find(
+        (e) => e.enemy.hp > 0 && e.x === nextCell.x && e.y === nextCell.y,
+      );
+      if (blocker) {
+        sim.path = null;
+        sim.turnAction = {
+          kind: 'wait',
+          t: 0,
+          duration: 0.2 / (speedScale * exploreMult),
+        };
+        return;
+      }
+
+      // 未訪問部屋の入口前でHP60%未満なら入室前に回復待機へ移行
+      const curRoom = sim.roomGrid[h.cy]?.[h.cx] ?? -1;
+      const nextRoom = sim.roomGrid[nextCell.y]?.[nextCell.x] ?? -1;
+      if (
+        curRoom === -1 &&
+        nextRoom >= 0 &&
+        !sim.visitedRooms.has(nextRoom) &&
+        shouldEnterRestMode(sim.heroHp, stats.hp)
+      ) {
+        sim.battleMode = 'RESTING';
+        sim.path = null;
+        sim.turnAction = {
+          kind: 'rest',
+          t: 0,
+          duration: 0.34 / (speedScale * exploreMult),
+        };
+        return;
+      }
+
+      const stepAngle = cardinalAngleFromDelta(nextCell.x - h.cx, nextCell.y - h.cy);
+      sim.turnAction = {
+        kind: 'step',
+        fromX: h.cx,
+        fromY: h.cy,
+        toX: nextCell.x,
+        toY: nextCell.y,
+        fromAngle: h.angle,
+        targetAngle: stepAngle,
+        t: 0,
+        duration: (sim.moveStyle === 'step' ? 0.2 : 0.24) / (speedScale * exploreMult),
+      };
     };
 
     const stepBattle = (rawDt: number) => {
       const st = stateRef.current;
       const stats = calcHeroStats(st.equipped, st.cleared100);
-      const combatDt = rawDt * sim.speed;
+      const speedDt = rawDt * sim.speed;
 
-      if (sim.battleMode === 'WALKING') {
-        if (sim.heroHp < stats.hp) {
-          sim.heroHp = Math.min(stats.hp, sim.heroHp + stats.hp * 0.12 * combatDt);
-        }
-        const activeBuff = getActiveFairyBuff(st.fairy);
-        const exploreMult =
-          activeBuff?.kind === 'explore'
-            ? 1 + getFairyProfile(getFairyRank(st.maxStage, st.cleared100)).buffExplorePct / 100
-            : 1;
-        crawlWalk(rawDt * exploreMult);
-      } else if (sim.battleMode === 'FIGHTING' && sim.enemy) {
-        if (sim.heroHp < stats.hp) {
-          sim.heroHp = Math.min(stats.hp, sim.heroHp + stats.hp * 0.02 * combatDt);
-        }
-
-        if (sim.enemy.isRareEscape) {
-          sim.rareEscapeTimer -= combatDt;
-          if (sim.rareEscapeTimer <= 0) {
-            callbacksRef.current.onAddLog('💨 はぐれ黄金スライムは逃げ出した…', '#94a3b8');
-            showBattleBanner('💨 逃げられた！（ペナルティなし）');
-            sim.enemy = null;
-            sim.enemyCell = null;
-            sim.path = null;
-            sim.segs = null;
-            sim.phase = 'decide';
-            sim.battleMode = 'TRANSITION';
-            sim.transTimer = 0.35;
-            callbacksRef.current.onSyncHud({ bossActive: false });
-            return;
-          }
-        }
-
-        sim.heroAtkTimer += combatDt;
-        const atkInterval = 1 / stats.aspd;
-        let swings = 0;
-        while (sim.heroAtkTimer >= atkInterval && swings < 10) {
-          sim.heroAtkTimer -= atkInterval;
-          swings++;
-
-          const totalHits = 1 + stats.mythicCount;
-          let totalDmgThisSwing = 0;
-          let maxTier = 0;
-
-          for (let hIdx = 0; hIdx < totalHits; hIdx++) {
-            const factor = hIdx === 0 ? 1.0 : 0.5;
-            const res = rollSingleHitDamage(stats, factor, sim.enemy.isBoss, sim.enemy.defRate);
-            totalDmgThisSwing += res.dmg;
-            if (res.tier > maxTier) maxTier = res.tier;
-
-            if (res.dmg > st.maxDmg) {
-              st.maxDmg = res.dmg;
-              callbacksRef.current.onSyncHud({});
-            }
-
-            const delayMs = hIdx * 65;
-            const yPos = 34 - hIdx * 5;
-            const label =
-              res.tier === 3
-                ? `🌈極${fmt(res.dmg)}!!!`
-                : res.tier === 2
-                  ? `🔥超${fmt(res.dmg)}!!`
-                  : res.tier === 1
-                    ? `⚡${fmt(res.dmg)}!`
-                    : fmt(res.dmg);
-            const cls =
-              res.tier === 3
-                ? 'float-hyper-crit'
-                : res.tier === 2
-                  ? 'float-super-crit'
-                  : res.tier === 1
-                    ? 'float-crit'
-                    : 'float-dmg';
-
-            if (delayMs === 0) {
-              spawnFloatText(50, yPos, label, cls);
-            } else {
-              setTimeout(() => spawnFloatText(50, yPos, label, cls), delayMs);
-            }
-          }
-
-          sim.enemy.hp -= totalDmgThisSwing;
-          sim.enemyShake = 0.18;
-          spawnSlashFx(50, 52);
-          playSfx(maxTier >= 1 ? 'crit' : 'hit', st.soundOn);
-
-          if (sim.enemy.hp <= 0) {
-            sim.enemy.hp = 0;
-            handleEnemyDefeated();
-            return;
-          }
-        }
-        if (swings >= 10) sim.heroAtkTimer = Math.min(sim.heroAtkTimer, atkInterval);
-
-        sim.enemyAtkTimer += combatDt;
-        let eSwings = 0;
-        while (sim.enemyAtkTimer >= sim.enemy.atkInterval && eSwings < 5) {
-          sim.enemyAtkTimer -= sim.enemy.atkInterval;
-          eSwings++;
-          const eDmg = Math.max(1, Math.round(sim.enemy.atk * rand(0.9, 1.1)));
-          sim.heroHp -= eDmg;
-
-          spawnFloatText(15, 78, `-${fmt(eDmg)}`, 'float-hero-dmg');
-
-          if (sim.heroHp <= 0) {
-            sim.heroHp = 0;
-            sim.battleMode = 'RECOVERING';
-            sim.recoverTimer = 1.1;
-            const wasSanctum = isSanctumFloor(st.stage);
-            const failedStage = st.stage;
-            const retreatStage = resolveDefeatRetreatStage(st.stage);
-            st.stage = retreatStage;
-            if (wasSanctum) {
-              showBattleBanner(`💀 ${failedStage}F玄室で敗退… ${retreatStage}Fへ撤退`);
-              callbacksRef.current.onAddLog(
-                `💀 ${failedStage}F玄室の大ボスに敗北！${retreatStage}Fで装備を整えよう`,
-                '#f87171',
-              );
-            } else if (retreatStage < failedStage) {
-              showBattleBanner(`撤退！ステージ${st.stage}で態勢を立て直す`);
-              callbacksRef.current.onAddLog(`敗北によりステージ${st.stage}へ撤退しました`, '#f87171');
-            } else {
-              showBattleBanner('体勢を立て直した！');
-            }
-            sim.needNewFloor = true;
-            callbacksRef.current.onSyncHud({ bossActive: false });
-            break;
-          }
-        }
-      } else if (sim.battleMode === 'TRANSITION') {
-        sim.transTimer -= combatDt;
+      if (sim.battleMode === 'TRANSITION') {
+        sim.transTimer -= speedDt;
         if (sim.transTimer <= 0) {
           if (st.stage !== sim.floorStage || sim.needNewFloor) {
             sim.needNewFloor = false;
             enterFloor();
+          } else {
+            sim.battleMode = 'WALKING';
           }
-          sim.battleMode = 'WALKING';
         }
-      } else if (sim.battleMode === 'RECOVERING') {
-        sim.recoverTimer -= combatDt;
+        updateHeroHpBar();
+        return;
+      }
+
+      if (sim.battleMode === 'RECOVERING') {
+        sim.recoverTimer -= speedDt;
         if (sim.recoverTimer <= 0) {
           sim.heroHp = stats.hp;
           enterFloor();
-          sim.battleMode = 'WALKING';
+        }
+        updateHeroHpBar();
+        return;
+      }
+
+      if (!sim.turnAction) {
+        beginNextTurn();
+      }
+
+      const action = sim.turnAction;
+      if (!action) {
+        updateHeroHpBar();
+        return;
+      }
+
+      action.t += rawDt;
+      const p = clamp(action.t / Math.max(0.001, action.duration), 0, 1);
+      const h = sim.hero;
+
+      if (action.kind === 'step') {
+        if (sim.moveStyle === 'step') {
+          if (p >= 0.28) {
+            h.angle = action.targetAngle;
+          }
+          if (p >= 0.85) {
+            h.x = action.toX + 0.5;
+            h.y = action.toY + 0.5;
+          }
+        } else {
+          const ad = angDiff(action.targetAngle, action.fromAngle);
+          if (Math.abs(ad) > 0.001) {
+            const turnP = clamp(p / 0.36, 0, 1);
+            const easeTurn = turnP * (2 - turnP);
+            h.angle = turnP >= 1 ? action.targetAngle : action.fromAngle + ad * easeTurn;
+          } else {
+            h.angle = action.targetAngle;
+          }
+          const posP = Math.abs(ad) > 0.001 ? clamp((p - 0.14) / 0.86, 0, 1) : p;
+          h.x = action.fromX + 0.5 + (action.toX - action.fromX) * posP;
+          h.y = action.fromY + 0.5 + (action.toY - action.fromY) * posP;
+        }
+
+        if (p >= 1) {
+          h.cx = action.toX;
+          h.cy = action.toY;
+          h.x = h.cx + 0.5;
+          h.y = h.cy + 0.5;
+          h.angle = action.targetAngle;
+          sim.turnAction = null;
+
+          if (sim.heroHp < stats.hp) {
+            sim.heroHp = Math.min(stats.hp, sim.heroHp + Math.max(1, stats.hp * 0.025));
+          }
+          sim.stepped.add(crawlKey(h.cx, h.cy));
+          crawlReveal();
+          checkPathEvents();
+
+          if (action.isRetreat && action.retreatRoomId !== undefined) {
+            sim.chokeHoldRoomId = action.retreatRoomId;
+            sim.chokeWaitTurns = 0;
+            sim.exploreTarget = null;
+            sim.path = null;
+            runEnemyTurn();
+            updateHeroHpBar();
+            return;
+          }
+
+          if (!sim.inSanctumFloor && sim.hasFloorKey && h.cx === sim.stairs.x && h.cy === sim.stairs.y) {
+            descendStairs();
+            updateHeroHpBar();
+            return;
+          }
+
+          const roomId = sim.roomGrid[h.cy]?.[h.cx] ?? -1;
+          const prevRoomId = sim.roomGrid[action.fromY]?.[action.fromX] ?? -1;
+          if (prevRoomId === -1 && roomId >= 0 && sim.chokeHoldRoomId !== roomId) {
+            for (const e of sim.floorEnemies) {
+              if (e.enemy.hp > 0 && e.roomId === roomId) {
+                e.awakened = true;
+              }
+            }
+            if (shouldRetreatInRoom(sim.floorEnemies, roomId)) {
+              const retreat = findChokeRetreatCell(
+                sim.grid,
+                sim.roomGrid,
+                { x: h.cx, y: h.cy },
+                roomId,
+                sim.floorEnemies,
+                sim.stairs,
+                { x: action.fromX, y: action.fromY },
+              );
+              if (retreat) {
+                sim.pendingRoomRetreat = {
+                  roomId,
+                  retreatCell: retreat.cell,
+                  faceAngle: snapCardinalAngle(retreat.faceAngle),
+                };
+              }
+            }
+            sim.path = null;
+            sim.exploreTarget = null;
+          } else if (roomId >= 0) {
+            for (const e of sim.floorEnemies) {
+              if (e.enemy.hp > 0 && e.roomId === roomId && !e.awakened) {
+                e.awakened = true;
+              }
+            }
+          }
+
+          runEnemyTurn();
+        }
+      } else if (action.kind === 'attack') {
+        const turnP = clamp(p / 0.34, 0, 1);
+        const ad = angDiff(action.targetAngle, action.fromAngle);
+        if (sim.moveStyle === 'step' || turnP >= 1 || Math.abs(ad) < 0.001) {
+          h.angle = action.targetAngle;
+        } else {
+          const easeTurn = turnP * (2 - turnP);
+          h.angle = action.fromAngle + ad * easeTurn;
+        }
+
+        if (p >= 0.38 && !action.struck) {
+          action.struck = true;
+          h.x = h.cx + 0.5;
+          h.y = h.cy + 0.5;
+          h.angle = action.targetAngle;
+          const targetFe = action.targetFloorEnemyId
+            ? sim.floorEnemies.find((fe) => fe.id === action.targetFloorEnemyId && fe.enemy.hp > 0) ?? null
+            : null;
+          const transitioned = executeHeroAttack(targetFe);
+          if (transitioned) {
+            sim.turnAction = null;
+            updateHeroHpBar();
+            return;
+          }
+        }
+
+        if (p >= 1) {
+          h.angle = action.targetAngle;
+          sim.turnAction = null;
+          runEnemyTurn();
+        }
+      } else if (action.kind === 'rest') {
+        if (p >= 1) {
+          sim.heroHp = Math.min(stats.hp, sim.heroHp + Math.max(1, stats.hp * 0.12));
+          spawnCanvasParticles(0.5, 0.72, 4, ['#4ade80', '#86efac'], 0.55);
+          sim.turnAction = null;
+          runEnemyTurn();
+          if (sim.battleMode === 'RESTING' && shouldExitRestMode(sim.heroHp, stats.hp)) {
+            sim.battleMode = 'WALKING';
+          }
+        }
+      } else if (action.kind === 'wait') {
+        if (p >= 1) {
+          sim.turnAction = null;
+          runEnemyTurn();
         }
       }
 
@@ -1294,12 +1659,17 @@ export function DungeonViewport({
       H: number,
       wx: number,
       wy: number,
-      icon: string,
+      spriteId: SpriteKey,
+      fallbackIcon: string,
       zbuf: Float32Array,
       scale: number,
       alpha: number,
       shakeX: number,
       glowColor: string | null,
+      nowMs: number,
+      flashWhite = false,
+      auraColor: string | null = null,
+      telegraph = false,
     ) => {
       const h = sim.hero;
       const relX = wx - h.x;
@@ -1313,20 +1683,67 @@ export function DungeonViewport({
       const ty = invDet * (-planeY * relX + planeX * relY);
       if (ty <= 0.15) return;
       const screenX = (W / 2) * (1 + tx / ty);
-      const size = Math.min(H * 1.8, (H / ty) * scale);
+      const size = Math.min(H * 1.45, (H / ty) * scale * 0.88);
       const colStep = sim.colStep || 2;
       const col = Math.max(0, Math.min(zbuf.length - 1, Math.floor(screenX / colStep)));
       if (ty > zbuf[col] + 0.05) return;
+
+      const bob = Math.sin(nowMs * 0.0055 + wx) * Math.min(5, size * 0.025);
+      const cx = screenX + shakeX;
+      const cy = H / 2 + size * 0.06 + bob;
+
       ctx.save();
       ctx.globalAlpha = alpha;
-      if (glowColor) {
-        ctx.shadowColor = glowColor;
-        ctx.shadowBlur = 16;
+
+      // Grounded drop shadow
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
+      ctx.beginPath();
+      ctx.ellipse(screenX, H / 2 + size * 0.44, size * 0.38, Math.max(3, size * 0.1), 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Boss / Sanctum pulsing magic aura ring
+      if (auraColor) {
+        const pulse = 0.88 + Math.sin(nowMs * 0.008) * 0.12;
+        ctx.strokeStyle = auraColor;
+        ctx.lineWidth = Math.max(1.5, size * 0.025);
+        ctx.beginPath();
+        ctx.ellipse(cx, cy, size * 0.56 * pulse, size * 0.56 * pulse, 0, 0, Math.PI * 2);
+        ctx.stroke();
       }
-      ctx.font = `${size}px sans-serif`;
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(icon, screenX + shakeX, H / 2 + size * 0.08);
+
+      const compiled = getCompiledSprite(spriteId);
+      if (compiled) {
+        const frameIdx: 0 | 1 = Math.floor(nowMs / 360) % 2 === 0 ? 0 : 1;
+        const src = flashWhite ? compiled.flashFrames[frameIdx] : compiled.frames[frameIdx];
+        ctx.imageSmoothingEnabled = false;
+        if (glowColor) {
+          ctx.shadowColor = glowColor;
+          ctx.shadowBlur = 14;
+        }
+        ctx.drawImage(src, Math.round(cx - size / 2), Math.round(cy - size / 2), Math.round(size), Math.round(size));
+      } else {
+        if (glowColor) {
+          ctx.shadowColor = glowColor;
+          ctx.shadowBlur = 14;
+        }
+        ctx.font = `${size}px sans-serif`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(fallbackIcon, cx, cy);
+      }
+
+      // Boss attack windup telegraph glint
+      if (telegraph) {
+        const gSize = Math.max(6, size * 0.14);
+        const gx = cx;
+        const gy = cy - size * 0.38;
+        ctx.shadowColor = '#f43f5e';
+        ctx.shadowBlur = 12;
+        ctx.fillStyle = '#fde047';
+        ctx.fillRect(gx - gSize, gy - 1.5, gSize * 2, 3);
+        ctx.fillRect(gx - 1.5, gy - gSize, 3, gSize * 2);
+      }
+
       ctx.restore();
       ctx.textBaseline = 'alphabetic';
     };
@@ -1342,35 +1759,74 @@ export function DungeonViewport({
       mctx.fillStyle = 'rgba(2,6,16,1)';
       mctx.fillRect(0, 0, mapCv.width, mapCv.height);
 
+      const h = sim.hero;
+      const heroRoomId = sim.inSanctumFloor ? 0 : (sim.roomGrid[h.cy]?.[h.cx] ?? -1);
+
       for (const k of sim.explored) {
         const [x, y] = k.split(',').map(Number);
-        mctx.fillStyle = grid[y][x] === 1 ? '#3d5478' : '#131f36';
+        if (grid[y][x] === 1) {
+          mctx.fillStyle = '#526d96';
+        } else {
+          const rId = sim.roomGrid[y]?.[x] ?? -1;
+          if (rId >= 0) {
+            mctx.fillStyle = rId === sim.monsterHouseRoomId ? '#581c87' : '#264b82';
+          } else {
+            // 通った通路を明るく見分けやすく描画
+            mctx.fillStyle = sim.stepped.has(k) ? '#3b69ad' : '#254372';
+          }
+        }
         mctx.fillRect(x * S, y * S, S, S);
       }
 
       for (const ev of sim.events) {
         if (ev.triggered) continue;
         if (sim.explored.has(crawlKey(ev.x, ev.y))) {
-          mctx.fillStyle = '#fde047';
+          mctx.fillStyle =
+            ev.type === 'stones'
+              ? '#38bdf8'
+              : ev.type === 'heal'
+                ? '#4ade80'
+                : '#fde047';
           mctx.beginPath();
-          mctx.arc((ev.x + 0.5) * S, (ev.y + 0.5) * S, Math.max(2.2, S * 0.35), 0, Math.PI * 2);
+          mctx.arc((ev.x + 0.5) * S, (ev.y + 0.5) * S, Math.max(2.0, S * 0.34), 0, Math.PI * 2);
           mctx.fill();
         }
       }
 
       if (sim.explored.has(crawlKey(sim.stairs.x, sim.stairs.y))) {
-        mctx.fillStyle = '#fbbf24';
-        mctx.fillRect(sim.stairs.x * S + 1, sim.stairs.y * S + 1, S - 2, S - 2);
+        if (sim.hasFloorKey) {
+          mctx.fillStyle = '#fbbf24';
+          mctx.fillRect(sim.stairs.x * S + 1, sim.stairs.y * S + 1, S - 2, S - 2);
+        } else {
+          mctx.strokeStyle = '#fbbf24';
+          mctx.lineWidth = 1.5;
+          mctx.strokeRect(sim.stairs.x * S + 1, sim.stairs.y * S + 1, Math.max(2, S - 2), Math.max(2, S - 2));
+        }
       }
 
-      if (sim.enemy && sim.enemyCell && sim.explored.has(crawlKey(sim.enemyCell.x, sim.enemyCell.y))) {
-        mctx.fillStyle = sim.enemy.isRareEscape
-          ? (Date.now() % 400 < 200 ? '#fde047' : '#38bdf8')
-          : '#f87171';
-        mctx.fillRect(sim.enemyCell.x * S + 1, sim.enemyCell.y * S + 1, S - 2, S - 2);
+      if (sim.inSanctumFloor) {
+        if (sim.enemy && sim.enemyCell && sim.explored.has(crawlKey(sim.enemyCell.x, sim.enemyCell.y))) {
+          mctx.fillStyle = '#c084fc';
+          mctx.fillRect(sim.enemyCell.x * S + 1, sim.enemyCell.y * S + 1, S - 2, S - 2);
+        }
+      } else {
+        for (const fe of sim.floorEnemies) {
+          if (fe.enemy.hp <= 0) continue;
+          if (!sim.explored.has(crawlKey(fe.x, fe.y))) continue;
+          const inSight =
+            (heroRoomId >= 0 && fe.roomId === heroRoomId) ||
+            Math.abs(fe.x - h.cx) + Math.abs(fe.y - h.cy) <= 1;
+          if (!inSight) continue;
+          mctx.fillStyle = fe.enemy.isRareEscape
+            ? Date.now() % 400 < 200
+              ? '#fde047'
+              : '#38bdf8'
+            : fe.enemy.isBoss
+              ? '#f59e0b'
+              : '#f87171';
+          mctx.fillRect(fe.x * S + 1, fe.y * S + 1, Math.max(2, S - 2), Math.max(2, S - 2));
+        }
       }
-
-      const h = sim.hero;
       const cx = h.x * S;
       const cy = h.y * S;
       mctx.save();
@@ -1391,10 +1847,36 @@ export function DungeonViewport({
       const now = performance.now();
       const rdt = Math.min(0.05, (now - lastRender) / 1000);
       lastRender = now;
-      if (sim.enemyShake > 0) sim.enemyShake -= rdt;
+      if (sim.enemyShake > 0) sim.enemyShake = Math.max(0, sim.enemyShake - rdt);
+      if (sim.enemyFlashTimer > 0) sim.enemyFlashTimer = Math.max(0, sim.enemyFlashTimer - rdt);
+      for (const fe of sim.floorEnemies) {
+        if (fe.shake > 0) fe.shake = Math.max(0, fe.shake - rdt);
+        if (fe.flashTimer > 0) fe.flashTimer = Math.max(0, fe.flashTimer - rdt);
+      }
+      if (sim.screenShake > 0) sim.screenShake = Math.max(0, sim.screenShake - rdt);
+      if (sim.heroHurtFlash > 0) sim.heroHurtFlash = Math.max(0, sim.heroHurtFlash - rdt);
       if (sim.dying) {
         sim.dying.t -= rdt;
         if (sim.dying.t <= 0) sim.dying = null;
+      }
+
+      // Advance zero-GC pooled particles & canvas slashes
+      const pool = fxPoolRef.current;
+      for (const p of pool.particles) {
+        if (!p.active) continue;
+        p.life -= rdt;
+        if (p.life <= 0) {
+          p.active = false;
+          continue;
+        }
+        p.x += p.vx * rdt;
+        p.y += p.vy * rdt;
+        p.vy += 0.72 * rdt;
+      }
+      for (const sl of pool.slashes) {
+        if (!sl.active) continue;
+        sl.life -= rdt;
+        if (sl.life <= 0) sl.active = false;
       }
 
       const cv = viewCanvasRef.current;
@@ -1409,29 +1891,60 @@ export function DungeonViewport({
       const grid = sim.grid;
       const pal = sim.palette;
       const horizon = H / 2;
+      const wallTex = getWallTextureCanvas(pal, sim.palIdx, sim.inSanctumFloor);
+      const heroRoomId = sim.inSanctumFloor ? 0 : (sim.roomGrid[h.cy]?.[h.cx] ?? -1);
+      const inCorridor = !sim.inSanctumFloor && heroRoomId === -1;
+
+      ctx.save();
+      if (sim.screenShake > 0) {
+        const mag = sim.screenShake * 18;
+        ctx.translate((Math.random() - 0.5) * mag, (Math.random() - 0.5) * mag);
+      }
 
       const ceil = ctx.createLinearGradient(0, 0, 0, horizon);
-      ceil.addColorStop(0, pal.ceil0);
-      ceil.addColorStop(1, pal.ceil1);
+      ceil.addColorStop(0, sim.inSanctumFloor ? '#0b0316' : pal.ceil0);
+      ceil.addColorStop(1, sim.inSanctumFloor ? '#220e3d' : inCorridor ? '#02050e' : pal.ceil1);
       ctx.fillStyle = ceil;
       ctx.fillRect(0, 0, W, horizon);
 
       const fl = ctx.createLinearGradient(0, horizon, 0, H);
-      fl.addColorStop(0, pal.floor0);
-      fl.addColorStop(1, pal.floor1);
+      fl.addColorStop(0, sim.inSanctumFloor ? '#1e0b36' : inCorridor ? '#02050e' : pal.floor0);
+      fl.addColorStop(1, sim.inSanctumFloor ? '#07020e' : pal.floor1);
       ctx.fillStyle = fl;
       ctx.fillRect(0, horizon, W, H - horizon);
+
+      // Subtle retro perspective floor depth lines
+      ctx.fillStyle = sim.inSanctumFloor
+        ? 'rgba(192,132,252,0.08)'
+        : inCorridor
+          ? 'rgba(255,255,255,0.02)'
+          : 'rgba(255,255,255,0.045)';
+      for (let step = 1; step <= 5; step++) {
+        const fy = horizon + ((step * step) / 25) * (H - horizon);
+        ctx.fillRect(0, Math.round(fy), W, 1);
+      }
+
+      if (inCorridor) {
+        // 通路では奥の床・天井も暗く落とし、1マス先までしか見えない松明視界にする
+        const corrDark = ctx.createLinearGradient(0, horizon - H * 0.24, 0, horizon + H * 0.24);
+        corrDark.addColorStop(0, 'rgba(2,5,14,0)');
+        corrDark.addColorStop(0.5, 'rgba(2,5,14,0.96)');
+        corrDark.addColorStop(1, 'rgba(2,5,14,0)');
+        ctx.fillStyle = corrDark;
+        ctx.fillRect(0, horizon - H * 0.24, W, H * 0.48);
+      }
 
       const dirX = Math.cos(h.angle);
       const dirY = Math.sin(h.angle);
       const planeX = -dirY * 0.66;
       const planeY = dirX * 0.66;
 
-      const colStep = W > 800 ? 2 : 1;
+      const colStep = W > 800 ? 3 : 2;
       sim.colStep = colStep;
       const zbuf = new Float32Array(Math.ceil(W / colStep));
-      const base = pal.wall;
-      const fogCol = pal.fogWall;
+      const base = sim.inSanctumFloor ? [88, 56, 138] : pal.wall;
+      const fogCol = sim.inSanctumFloor ? [16, 6, 30] : inCorridor ? [2, 5, 14] : pal.fogWall;
+      ctx.imageSmoothingEnabled = false;
 
       for (let sx = 0; sx < W; sx += colStep) {
         const camX = (2 * (sx + colStep * 0.5)) / W - 1;
@@ -1462,18 +1975,30 @@ export function DungeonViewport({
 
         let side = 0;
         let hit = 0;
+        let exitedRoomDist: number | null = null;
         for (let i = 0; i < 64 && !hit; i++) {
+          let stepDist: number;
           if (sdx < sdy) {
+            stepDist = sdx;
             sdx += ddx;
             mx += stepX;
             side = 0;
           } else {
+            stepDist = sdy;
             sdy += ddy;
             my += stepY;
             side = 1;
           }
           if (mx < 0 || my < 0 || mx >= CRAWL_COLS || my >= CRAWL_ROWS || grid[my][mx] === 1) {
             hit = 1;
+          } else if (
+            !sim.inSanctumFloor &&
+            heroRoomId >= 0 &&
+            exitedRoomDist === null &&
+            (sim.roomGrid[my]?.[mx] ?? -1) !== heroRoomId
+          ) {
+            // 部屋から通路へ出た境界距離を記録し、通路奥や次の部屋を見通せないようにする
+            exitedRoomDist = stepDist;
           }
         }
         const dist = side === 0 ? sdx - ddx : sdy - ddy;
@@ -1481,97 +2006,295 @@ export function DungeonViewport({
         const lh = H / Math.max(dist, 0.0001);
         const y0 = horizon - lh / 2;
         const y1 = horizon + lh / 2;
+        const wallH = y1 - y0;
         const wallX = side === 0 ? h.y + dist * rdy : h.x + dist * rdx;
         const frac = wallX - Math.floor(wallX);
 
-        const fog = Math.max(0.14, 1 - dist / 12.5);
-        const sideShade = side === 1 ? 0.76 : 1.0;
-        const seamAlpha = Math.max(0, 1 - dist / 6.5);
-        const seamShade = seamAlpha > 0 && (frac < 0.04 || frac > 0.96) ? 1 - 0.36 * seamAlpha : 1.0;
+        const outsideDist = exitedRoomDist !== null ? Math.max(0, dist - exitedRoomDist) : 0;
+        const inOutsideDark = exitedRoomDist !== null;
 
-        const rCol = Math.round((base[0] * fog + fogCol[0] * (1 - fog)) * sideShade * seamShade);
-        const gCol = Math.round((base[1] * fog + fogCol[1] * (1 - fog)) * sideShade * seamShade);
-        const bCol = Math.round((base[2] * fog + fogCol[2] * (1 - fog)) * sideShade * seamShade);
-
-        ctx.fillStyle = `rgb(${rCol},${gCol},${bCol})`;
-        ctx.fillRect(sx, y0, colStep, y1 - y0);
-
-        const hAlpha = 0.22 * Math.max(0, 1 - dist / 6.0);
-        if (hAlpha > 0.02) {
-          ctx.fillStyle = `rgba(0,0,0,${hAlpha.toFixed(2)})`;
-          const hWall = y1 - y0;
-          for (let r = 1; r <= 3; r++) {
-            ctx.fillRect(sx, y0 + hWall * (r * 0.25), colStep, 1.5);
+        if (inOutsideDark && exitedRoomDist !== null) {
+          const portalH = H / Math.max(exitedRoomDist, 0.15);
+          const py0 = horizon - portalH / 2;
+          const py1 = horizon + portalH / 2;
+          const darkDist = exitedRoomDist + 1.35;
+          const darkH = H / Math.max(darkDist, 0.15);
+          const dy0 = horizon - darkH / 2;
+          const dy1 = horizon + darkH / 2;
+          const clampPy0 = Math.max(0, py0);
+          const clampPy1 = Math.min(H, py1);
+          const ceilEnd = Math.min(dy0, y0);
+          if (ceilEnd > clampPy0 && dy0 > py0) {
+            const cg = ctx.createLinearGradient(0, py0, 0, dy0);
+            cg.addColorStop(0, 'rgba(2,5,14,0.08)');
+            cg.addColorStop(1, 'rgba(2,5,14,1)');
+            ctx.fillStyle = cg;
+            ctx.fillRect(sx, clampPy0, colStep, ceilEnd - clampPy0);
+          }
+          const floorStart = Math.max(dy1, y1);
+          if (clampPy1 > floorStart && py1 > dy1) {
+            const fg = ctx.createLinearGradient(0, dy1, 0, py1);
+            fg.addColorStop(0, 'rgba(2,5,14,1)');
+            fg.addColorStop(1, 'rgba(2,5,14,0.08)');
+            ctx.fillStyle = fg;
+            ctx.fillRect(sx, floorStart, colStep, clampPy1 - floorStart);
+          }
+          if (outsideDist >= 1.35) {
+            const dStart = Math.max(0, dy0);
+            const dEnd = Math.min(H, dy1);
+            if (dEnd > dStart) {
+              ctx.fillStyle = 'rgb(2,5,14)';
+              ctx.fillRect(sx, dStart, colStep, dEnd - dStart);
+            }
+            continue;
           }
         }
+
+        if (inCorridor && dist >= 2.05) {
+          ctx.fillStyle = 'rgb(2,5,14)';
+          ctx.fillRect(sx, Math.max(0, y0), colStep, Math.min(H, y1) - Math.max(0, y0));
+          continue;
+        }
+
+        const effectiveFogCol = inCorridor || inOutsideDark ? [2, 5, 14] : fogCol;
+        const fog = inCorridor
+          ? Math.max(0, 1 - Math.pow(dist / 2.05, 1.45))
+          : inOutsideDark
+            ? Math.max(0, 1 - Math.pow(outsideDist / 1.35, 1.35))
+            : Math.max(0.16, 1 - dist / 11.5);
+        const sideDark = side === 1 ? (inCorridor || inOutsideDark ? 0.14 : 0.24) : 0;
+        const shadeAlpha = Math.min(inCorridor || inOutsideDark ? 1.0 : 0.92, 1 - fog + sideDark);
+
+        if (wallTex) {
+          const texX = clamp(Math.floor(frac * 16), 0, 15);
+          ctx.drawImage(wallTex, texX, 0, 1, 16, sx, y0, colStep, wallH);
+          if (shadeAlpha > 0.02) {
+            ctx.fillStyle = `rgba(${effectiveFogCol[0]},${effectiveFogCol[1]},${effectiveFogCol[2]},${shadeAlpha.toFixed(2)})`;
+            ctx.fillRect(sx, y0, colStep, wallH);
+          }
+          // Flickering pixel wall sconce (hidden in dark corridors & beyond doorways)
+          const sconceVisible = inCorridor
+            ? dist < 1.55
+            : inOutsideDark
+              ? outsideDist < 0.75
+              : dist < 7.5;
+          if (sconceVisible && ((mx * 7 + my * 13) & 3) === 0 && frac > 0.44 && frac < 0.56) {
+            const flicker = 0.72 + Math.sin(now * 0.015 + mx + my) * 0.28;
+            const flameY = y0 + wallH * 0.32;
+            const flameH = Math.max(2, wallH * 0.065);
+            const bracketH = Math.max(2, wallH * 0.055);
+            ctx.fillStyle = sim.inSanctumFloor
+              ? `rgba(192,132,252,${(0.16 * flicker).toFixed(2)})`
+              : `rgba(251,191,36,${(0.18 * flicker).toFixed(2)})`;
+            ctx.fillRect(sx, flameY - flameH * 0.8, colStep, flameH * 2.6);
+            ctx.fillStyle = 'rgba(30,41,59,0.92)';
+            ctx.fillRect(sx, flameY + flameH, colStep, bracketH);
+            ctx.fillStyle = sim.inSanctumFloor
+              ? `rgba(168,85,247,${(0.88 * flicker).toFixed(2)})`
+              : `rgba(249,115,22,${(0.9 * flicker).toFixed(2)})`;
+            ctx.fillRect(sx, flameY, colStep, flameH);
+            if (frac > 0.47 && frac < 0.53) {
+              ctx.fillStyle = sim.inSanctumFloor
+                ? `rgba(244,114,182,${(0.95 * flicker).toFixed(2)})`
+                : `rgba(254,240,138,${(0.95 * flicker).toFixed(2)})`;
+              ctx.fillRect(sx, flameY + flameH * 0.15, colStep, Math.max(1.5, flameH * 0.55));
+            }
+          }
+        } else {
+          const sideShade = side === 1 ? 0.76 : 1.0;
+          const rCol = Math.round((base[0] * fog + effectiveFogCol[0] * (1 - fog)) * sideShade);
+          const gCol = Math.round((base[1] * fog + effectiveFogCol[1] * (1 - fog)) * sideShade);
+          const bCol = Math.round((base[2] * fog + effectiveFogCol[2] * (1 - fog)) * sideShade);
+          ctx.fillStyle = `rgb(${rCol},${gCol},${bCol})`;
+          ctx.fillRect(sx, y0, colStep, wallH);
+        }
       }
+
+      // 視界制限ヘルパー：通路では約1マス先(<=1.85)、部屋では同室内と入口直前の通路マスのみ表示
+      const getSpriteVisibility = (wx: number, wy: number): { visible: boolean; alpha: number; dimGlow: boolean } => {
+        if (sim.inSanctumFloor) return { visible: true, alpha: 1, dimGlow: false };
+        const sDist = Math.hypot(wx - h.x, wy - h.y);
+        if (inCorridor) {
+          if (sDist > 1.85) return { visible: false, alpha: 0, dimGlow: true };
+          const fade = sDist > 1.15 ? clamp((1.85 - sDist) / 0.7, 0.12, 1) : 1;
+          return { visible: true, alpha: fade, dimGlow: sDist > 1.35 };
+        }
+        const sx = Math.floor(wx);
+        const sy = Math.floor(wy);
+        const spRoomId = sim.roomGrid[sy]?.[sx] ?? -1;
+        if (spRoomId === heroRoomId) {
+          return { visible: true, alpha: 1, dimGlow: false };
+        }
+        if (spRoomId === -1 && sDist <= 1.35) {
+          return { visible: true, alpha: clamp((1.35 - sDist) / 0.5, 0.18, 0.9), dimGlow: true };
+        }
+        return { visible: false, alpha: 0, dimGlow: true };
+      };
 
       const sprites: Array<{
         wx: number;
         wy: number;
+        spriteId: SpriteKey;
         icon: string;
         scale: number;
         alpha: number;
         shake: number;
         glow: string | null;
-      }> = [
-        {
-          wx: sim.stairs.x + 0.5,
-          wy: sim.stairs.y + 0.5,
-          icon: '🪜',
-          scale: 0.55,
-          alpha: 1,
-          shake: 0,
-          glow: null,
-        },
-      ];
+        flash: boolean;
+        aura: string | null;
+        telegraph: boolean;
+      }> = [];
+
+      if (!sim.inSanctumFloor) {
+        const stVis = getSpriteVisibility(sim.stairs.x + 0.5, sim.stairs.y + 0.5);
+        if (stVis.visible) {
+          sprites.push({
+            wx: sim.stairs.x + 0.5,
+            wy: sim.stairs.y + 0.5,
+            spriteId: 'stairs',
+            icon: '🪜',
+            scale: 0.65,
+            alpha: sim.hasFloorKey ? stVis.alpha : stVis.alpha * 0.72,
+            shake: 0,
+            glow: stVis.dimGlow
+              ? null
+              : sim.hasFloorKey
+                ? 'rgba(251, 191, 36, 0.7)'
+                : 'rgba(148, 163, 184, 0.3)',
+            flash: false,
+            aura: stVis.dimGlow
+              ? null
+              : sim.hasFloorKey
+                ? 'rgba(251, 191, 36, 0.35)'
+                : null,
+            telegraph: false,
+          });
+        }
+      }
 
       for (const ev of sim.events) {
         if (!ev.triggered) {
+          const evVis = getSpriteVisibility(ev.x + 0.5, ev.y + 0.5);
+          if (!evVis.visible) continue;
+          const isStones = ev.type === 'stones';
+          const isHeal = ev.type === 'heal';
+          const isChest = ev.type === 'chest';
           sprites.push({
             wx: ev.x + 0.5,
             wy: ev.y + 0.5,
+            spriteId: ev.spriteId ?? 'chest_gold',
             icon: ev.icon,
-            scale: 0.65,
-            alpha: 1,
+            scale: isChest ? 0.68 : 0.54,
+            alpha: evVis.alpha,
             shake: 0,
-            glow: 'rgba(251, 191, 36, 0.8)',
+            glow: evVis.dimGlow
+              ? null
+              : isStones
+                ? 'rgba(56, 189, 248, 0.75)'
+                : isHeal
+                  ? 'rgba(74, 222, 128, 0.75)'
+                  : 'rgba(251, 191, 36, 0.75)',
+            flash: false,
+            aura: evVis.dimGlow
+              ? null
+              : isStones
+                ? 'rgba(56, 189, 248, 0.25)'
+                : isHeal
+                  ? 'rgba(74, 222, 128, 0.25)'
+                  : 'rgba(251, 191, 36, 0.28)',
+            telegraph: false,
           });
         }
       }
 
       if (sim.dying) {
-        sprites.push({
-          wx: sim.dying.wx,
-          wy: sim.dying.wy,
-          icon: sim.dying.icon,
-          scale: 0.95,
-          alpha: Math.max(0, sim.dying.t / 0.45),
-          shake: 0,
-          glow: null,
-        });
+        const dVis = getSpriteVisibility(sim.dying.wx, sim.dying.wy);
+        if (dVis.visible) {
+          sprites.push({
+            wx: sim.dying.wx,
+            wy: sim.dying.wy,
+            spriteId: sim.dying.spriteId,
+            icon: '💥',
+            scale: sim.dying.scale * (1 + (0.48 - sim.dying.t) * 0.45),
+            alpha: Math.max(0, sim.dying.t / 0.48) * dVis.alpha,
+            shake: (Math.random() - 0.5) * 6,
+            glow: null,
+            flash: true,
+            aura: null,
+            telegraph: false,
+          });
+        }
       }
 
-      if (sim.enemy && sim.enemyCell && sim.battleMode !== 'TRANSITION') {
-        const shake = sim.enemyShake > 0 ? (Math.random() - 0.5) * 10 : 0;
-        const glow = sim.enemy.isRareEscape
-          ? 'rgba(250, 204, 21, 0.95)'
-          : sim.enemy.isGreatDemon
+      if (sim.inSanctumFloor) {
+        if (sim.enemy && sim.enemyCell && sim.battleMode !== 'TRANSITION') {
+          const shake = sim.enemyShake > 0 ? (Math.random() - 0.5) * 10 : 0;
+          const glow = sim.enemy.isGreatDemon
             ? 'rgba(244, 114, 182, 0.95)'
-            : sim.enemy.isSanctumBoss
-              ? 'rgba(192, 132, 252, 0.95)'
-              : sim.enemy.isMidBoss
+            : 'rgba(192, 132, 252, 0.95)';
+          const aura = sim.enemy.isGreatDemon
+            ? 'rgba(244, 114, 182, 0.65)'
+            : 'rgba(192, 132, 252, 0.6)';
+          const telegraph =
+            sim.battleMode === 'FIGHTING' &&
+            sim.turnAction?.kind === 'attack' &&
+            sim.turnAction.struck;
+          sprites.push({
+            wx: sim.enemyCell.x + 0.5,
+            wy: sim.enemyCell.y + 0.5,
+            spriteId: sim.enemy.spriteId,
+            icon: sim.enemy.icon,
+            scale: 1.45,
+            alpha: 1,
+            shake,
+            glow,
+            flash: sim.enemyFlashTimer > 0,
+            aura,
+            telegraph,
+          });
+        }
+      } else if (sim.battleMode !== 'TRANSITION') {
+        for (const fe of sim.floorEnemies) {
+          if (fe.enemy.hp <= 0) continue;
+          const feVis = getSpriteVisibility(fe.x + 0.5, fe.y + 0.5);
+          if (!feVis.visible) continue;
+          const shake = fe.shake > 0 ? (Math.random() - 0.5) * 10 : 0;
+          const glow = feVis.dimGlow
+            ? null
+            : fe.enemy.isRareEscape
+              ? 'rgba(250, 204, 21, 0.95)'
+              : fe.enemy.isMidBoss
                 ? 'rgba(192, 132, 252, 0.8)'
+                : fe.enemy.isBoss
+                  ? 'rgba(251, 191, 36, 0.85)'
+                  : null;
+          const aura = feVis.dimGlow
+            ? null
+            : fe.enemy.isBoss
+              ? 'rgba(251, 191, 36, 0.45)'
+              : fe.enemy.isRareEscape
+                ? 'rgba(250, 204, 21, 0.55)'
                 : null;
-        sprites.push({
-          wx: sim.enemyCell.x + 0.5,
-          wy: sim.enemyCell.y + 0.5,
-          icon: sim.enemy.icon,
-          scale: sim.enemy.isSanctumBoss ? 1.45 : sim.enemy.isBoss ? 1.25 : 0.95,
-          alpha: 1,
-          shake,
-          glow,
-        });
+          const telegraph =
+            sim.battleMode === 'FIGHTING' &&
+            fe.enemy.isBoss &&
+            sim.turnAction?.kind === 'attack' &&
+            sim.turnAction.struck &&
+            (sim.turnCount + 1) % 2 === 0;
+          sprites.push({
+            wx: fe.x + 0.5,
+            wy: fe.y + 0.5,
+            spriteId: fe.enemy.spriteId,
+            icon: fe.enemy.icon,
+            scale: fe.enemy.isBoss ? 1.25 : 0.88,
+            alpha: feVis.alpha,
+            shake,
+            glow,
+            flash: fe.flashTimer > 0,
+            aura,
+            telegraph,
+          });
+        }
       }
 
       sprites.sort((a, b) => {
@@ -1580,19 +2303,81 @@ export function DungeonViewport({
         return db - da;
       });
       for (const sp of sprites) {
-        drawSprite(ctx, W, H, sp.wx, sp.wy, sp.icon, zbuf, sp.scale, sp.alpha, sp.shake, sp.glow);
+        drawSprite(
+          ctx,
+          W,
+          H,
+          sp.wx,
+          sp.wy,
+          sp.spriteId,
+          sp.icon,
+          zbuf,
+          sp.scale,
+          sp.alpha,
+          sp.shake,
+          sp.glow,
+          now,
+          sp.flash,
+          sp.aura,
+          sp.telegraph,
+        );
       }
 
-      if (
+      // Draw pooled canvas slash arcs
+      for (const sl of pool.slashes) {
+        if (!sl.active) continue;
+        const prog = 1 - sl.life / sl.maxLife;
+        const alpha = Math.max(0, 1 - prog * prog);
+        const len = Math.min(W, H) * (0.22 + prog * 0.08);
+        ctx.save();
+        ctx.translate(sl.x * W, sl.y * H);
+        ctx.rotate(sl.angle);
+        ctx.globalAlpha = alpha;
+        ctx.shadowColor = sl.accent;
+        ctx.shadowBlur = 12;
+        ctx.strokeStyle = sl.accent;
+        ctx.lineWidth = sl.thick + 2;
+        ctx.beginPath();
+        ctx.arc(0, 0, len * 0.55, -0.75, 0.75);
+        ctx.stroke();
+        ctx.strokeStyle = sl.color;
+        ctx.lineWidth = Math.max(1.5, sl.thick * 0.5);
+        ctx.beginPath();
+        ctx.arc(0, 0, len * 0.55, -0.65, 0.65);
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      // Draw pooled pixel impact/loot particles
+      for (const p of pool.particles) {
+        if (!p.active) continue;
+        const alpha = Math.max(0, p.life / p.maxLife);
+        ctx.save();
+        ctx.globalAlpha = alpha;
+        ctx.fillStyle = p.color;
+        ctx.fillRect(Math.round(p.x * W), Math.round(p.y * H), p.size, p.size);
+        ctx.restore();
+      }
+
+      if (sim.battleMode === 'RESTING') {
+        ctx.fillStyle = 'rgba(2, 6, 23, 0.62)';
+        ctx.fillRect(W / 2 - 72, 40, 144, 26);
+        ctx.strokeStyle = 'rgba(74, 222, 128, 0.6)';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(W / 2 - 72, 40, 144, 26);
+        ctx.fillStyle = '#86efac';
+        ctx.font = 'bold 12px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText('💚 回復中…', W / 2, 57);
+      } else if (
         sim.enemy &&
         sim.enemyCell &&
-        sim.battleMode !== 'TRANSITION' &&
-        (sim.battleMode === 'FIGHTING' || sim.phase === 'face')
+        sim.battleMode === 'FIGHTING'
       ) {
         const bw = 200;
         const bx = (W - bw) / 2;
         const by = 56;
-        ctx.fillStyle = 'rgba(0,0,0,.62)';
+        ctx.fillStyle = 'rgba(0,0,0,.68)';
         ctx.fillRect(bx - 2, by - 2, bw + 4, 12);
         ctx.fillStyle = sim.enemy.isRareEscape
           ? '#eab308'
@@ -1611,26 +2396,39 @@ export function DungeonViewport({
           by - 8,
         );
 
-        if (sim.enemy.isRareEscape && sim.battleMode === 'FIGHTING') {
+        if (sim.enemy.isRareEscape) {
+          const activeRare = sim.floorEnemies.find((e) => e.enemy === sim.enemy) ?? null;
+          const escTurns = Math.max(0, activeRare ? activeRare.rareEscapeTimer : 0);
           const tw = 150;
           const tx = (W - tw) / 2;
           const ty = by + 16;
           ctx.fillStyle = 'rgba(0,0,0,.55)';
           ctx.fillRect(tx - 1, ty - 1, tw + 2, 7);
           ctx.fillStyle = '#38bdf8';
-          ctx.fillRect(tx, ty, tw * clamp(sim.rareEscapeTimer / 10.0, 0, 1), 5);
+          ctx.fillRect(tx, ty, tw * clamp(escTurns / 6, 0, 1), 5);
           ctx.fillStyle = '#bae6fd';
           ctx.font = '11px sans-serif';
-          ctx.fillText(`逃走まで ${Math.max(0, sim.rareEscapeTimer).toFixed(1)}秒`, W / 2, ty + 16);
+          ctx.fillText(`逃走まで ${escTurns}ターン`, W / 2, ty + 16);
         }
       }
 
       const vg = ctx.createRadialGradient(W / 2, H / 2, H * 0.42, W / 2, H / 2, H * 0.95);
       vg.addColorStop(0, 'rgba(0,0,0,0)');
-      vg.addColorStop(1, 'rgba(0,0,0,0.5)');
+      vg.addColorStop(1, 'rgba(0,0,0,0.52)');
       ctx.fillStyle = vg;
       ctx.fillRect(0, 0, W, H);
 
+      // Red damage vignette when hero is struck
+      if (sim.heroHurtFlash > 0) {
+        const ha = Math.min(0.35, (sim.heroHurtFlash / 0.22) * 0.32);
+        const hvg = ctx.createRadialGradient(W / 2, H / 2, H * 0.3, W / 2, H / 2, H * 0.85);
+        hvg.addColorStop(0, 'rgba(220,38,38,0)');
+        hvg.addColorStop(1, `rgba(220,38,38,${ha.toFixed(2)})`);
+        ctx.fillStyle = hvg;
+        ctx.fillRect(0, 0, W, H);
+      }
+
+      ctx.restore();
       renderMap();
     };
 
@@ -1664,8 +2462,14 @@ export function DungeonViewport({
       if (rawDt > 8.0) {
         if (!sim.paused) callbacksRef.current.onOfflineElapsed(rawDt);
       } else {
-        const dt = Math.min(rawDt, 0.15);
-        if (!sim.paused) stepBattle(dt);
+        const dt = Math.min(rawDt, 0.05);
+        if (!sim.paused) {
+          if (sim.hitstopTimer > 0) {
+            sim.hitstopTimer = Math.max(0, sim.hitstopTimer - dt);
+          } else {
+            stepBattle(dt);
+          }
+        }
       }
 
       const drawIntervalMs = throttleCanvasRef.current || sim.paused ? 250 : 0;
@@ -1720,17 +2524,10 @@ export function DungeonViewport({
     const h = sim.hero;
     h.cx = clamp(Math.floor(h.x), 1, CRAWL_COLS - 2);
     h.cy = clamp(Math.floor(h.y), 1, CRAWL_ROWS - 2);
-    if (sim.moveStyle === 'step') {
+    if (sim.moveStyle === 'step' && !sim.turnAction) {
       h.x = h.cx + 0.5;
       h.y = h.cy + 0.5;
-      h.angle = Math.round(h.angle / (Math.PI / 2)) * (Math.PI / 2);
-    }
-    if (sim.phase !== 'face') {
-      sim.phase = 'decide';
-      sim.path = null;
-      sim.segs = null;
-      sim.segIdx = 0;
-      sim.segS = 0;
+      h.angle = snapCardinalAngle(h.angle);
     }
     try {
       localStorage.setItem(CRAWL_STYLE_KEY, sim.moveStyle);
@@ -1767,8 +2564,8 @@ export function DungeonViewport({
         <canvas
           id="map"
           ref={mapCanvasRef}
-          width={152}
-          height={152}
+          width={150}
+          height={150}
           data-testid="minimap-canvas"
           className="absolute right-2.5 top-10 z-10 rounded-lg border border-slate-400/45 bg-[#020610]/85"
         />
@@ -1797,16 +2594,20 @@ export function DungeonViewport({
                     className={
                       hudSnapshot.bossActive
                         ? 'font-bold text-red-400'
-                        : hudSnapshot.stairsFound
-                          ? 'text-amber-300'
+                        : hudSnapshot.hasFloorKey
+                          ? 'font-bold text-amber-300'
                           : 'text-sky-300'
                     }
                   >
                     {hudSnapshot.bossActive
-                      ? '階段ボス戦'
-                      : hudSnapshot.stairsFound
-                        ? `階段まで ${hudSnapshot.stepsToStairs}歩`
-                        : `探索 ${hudSnapshot.explorePct}%`}
+                      ? '鍵持ちボス戦'
+                      : hudSnapshot.hasFloorKey
+                        ? hudSnapshot.stairsFound
+                          ? `🔑 階段まで ${hudSnapshot.stepsToStairs}歩`
+                          : `🔑 探索 ${hudSnapshot.explorePct}%`
+                        : hudSnapshot.stairsFound
+                          ? `🔒 探索 ${hudSnapshot.explorePct}%`
+                          : `探索 ${hudSnapshot.explorePct}%`}
                   </span>
                   {heldAtGate && (
                     <>

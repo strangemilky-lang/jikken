@@ -1,24 +1,14 @@
-import {
-  MAX_BAG_SIZE,
-  MAX_EQUIP_LEVEL,
-  MAX_OFFLINE_SEC,
-  MAX_STASH_SIZE,
-  RARITIES,
-  SAVE_KEY,
-  SLOT_ORDER,
-  SLOTS,
-  SUB_MAP,
-} from './constants';
+import { MAX_BAG_SIZE, MAX_OFFLINE_SEC, MAX_STASH_SIZE, RARITIES, SAVE_KEY, SLOT_ORDER, SLOTS, SUB_MAP, SUB_POOL } from './constants';
 import {
   createDefaultFairyState,
   getFairyProfile,
   getFairyRank,
   sanitizeFairyState,
 } from './fairy';
-import { calcHeroStats, clamp, generateItem, getSalvageValue, uid } from './items';
+import { calcHeroStats, clamp, generateItem, getMaxEquipLevel, getSalvageValue, uid } from './items';
 import { createEnemy } from './maze';
 import { isSanctumFloor, SANCTUM_INTERVAL } from './sanctum';
-import type { EquippedSet, GameState, Item, OfflineSummary, SlotKey } from './types';
+import type { EquippedSet, GameState, Item, OfflineSummary, SlotKey, SubStat, SubStatKey } from './types';
 
 export function createDefaultState(): GameState {
   const starterEquipped = {
@@ -63,18 +53,38 @@ export function sanitizeItem(it: unknown, fallbackSlot: SlotKey = 'weapon'): Ite
   const rarityNum = typeof raw.rarity === 'number' ? Math.floor(raw.rarity) : 0;
   const rarity = clamp(rarityNum, 0, RARITIES.length - 1) as Item['rarity'];
   const stage = Math.max(1, typeof raw.stage === 'number' ? Math.floor(raw.stage) : 1);
-  const level = clamp(typeof raw.level === 'number' ? Math.floor(raw.level) : 0, 0, MAX_EQUIP_LEVEL);
+  const maxLv = getMaxEquipLevel({ rarity });
+  const level = clamp(typeof raw.level === 'number' ? Math.floor(raw.level) : 0, 0, maxLv);
 
-  const subStats = Array.isArray(raw.subStats)
-    ? raw.subStats
-        .filter((s): s is Record<string, unknown> => Boolean(s && typeof s === 'object'))
-        .filter((s) => typeof s.key === 'string' && s.key in SUB_MAP && typeof s.val === 'number')
-        .map((s) => ({
-          key: s.key as keyof typeof SUB_MAP,
-          val: +(s.val as number).toFixed(1),
+  const subStats: SubStat[] = [];
+  if (Array.isArray(raw.subStats)) {
+    const usedKeys = new Set<SubStatKey>();
+    for (const entry of raw.subStats) {
+      if (!entry || typeof entry !== 'object') continue;
+      const s = entry as Record<string, unknown>;
+      if (typeof s.key !== 'string' || typeof s.val !== 'number') continue;
+      if (s.key in SUB_MAP) {
+        const key = s.key as SubStatKey;
+        usedKeys.add(key);
+        subStats.push({
+          key,
+          val: +s.val.toFixed(1),
           boosts: typeof s.boosts === 'number' ? s.boosts : 0,
-        }))
-    : [];
+        });
+      } else if (s.key === 'aspd') {
+        const fallbackDef =
+          (!usedKeys.has('dmgPct') ? SUB_MAP.dmgPct : null) ??
+          SUB_POOL.find((def) => !usedKeys.has(def.key)) ??
+          SUB_MAP.dmgPct;
+        usedKeys.add(fallbackDef.key);
+        subStats.push({
+          key: fallbackDef.key,
+          val: +s.val.toFixed(1),
+          boosts: typeof s.boosts === 'number' ? s.boosts : 0,
+        });
+      }
+    }
+  }
 
   const mainStatObj = raw.mainStat as Record<string, unknown> | undefined;
   const mainBase = mainStatObj && typeof mainStatObj.base === 'number' ? Math.max(1, mainStatObj.base) : 10;
@@ -198,11 +208,11 @@ export function computeOfflineRewards(state: GameState, elapsedSec: number): Off
 
   const avgHp = (enemySample.maxHp * 4 + bossSample.maxHp) / 5;
   const estPower = Math.max(1, stats.offlinePower);
-  const avgKillTime = Math.max(2.2, 1.8 + avgHp / estPower);
+  const turnsToKill = avgHp / estPower;
+  const avgKillTime = Math.max(2.2, 1.8 + turnsToKill * 0.7);
 
-  const avgEnemyDps = enemySample.atk / enemySample.atkInterval;
-  const surviveTime = stats.hp / Math.max(0.1, avgEnemyDps);
-  const efficiency = surviveTime < (avgHp / estPower) ? 0.5 : 1.0;
+  const surviveTurns = stats.hp / Math.max(1, enemySample.atk);
+  const efficiency = surviveTurns < turnsToKill ? 0.5 : 1.0;
 
   const kills = Math.max(1, Math.floor((cappedSec / avgKillTime) * efficiency));
 

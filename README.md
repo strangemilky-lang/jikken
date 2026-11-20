@@ -1,20 +1,13 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://ai.google.dev/static/site-assets/images/share-ais-513315318.png" />
-</div>
+# ストリップ勇者伝 - 3Dクロウラー放置RPG
 
-# Run and deploy your AI Studio app
+一人称視点の疑似3Dダンジョンクロウラー（テクスチャ付きレイキャスティング＋ドット絵スプライト）と、常設の横長ストリップUI＆フローティング3窓が融合したハクスラ放置RPGです。
 
-This contains everything you need to run your app locally.
+詳細仕様は [GAME_SPEC.md](./GAME_SPEC.md) を参照してください。
 
-View your app in AI Studio: https://ai.studio/apps/337d0718-2f55-4f74-b791-a52001cdb2df
+## 開発・ビルドコマンド
 
-## Run Locally
-
-**Prerequisites:**  Node.js
-
-
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+- 依存関係インストール: `npm install`
+- 開発サーバー起動: `npm run dev`
+- ユニットテスト実行: `npx tsx --test src/game/game.test.ts`
+- 型チェック: `npm run lint`
+- 本番ビルド: `npm run build`

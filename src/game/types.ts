@@ -2,13 +2,12 @@ export type RarityId = 0 | 1 | 2 | 3 | 4;
 
 export type SlotKey = 'weapon' | 'armor' | 'ring' | 'necklace' | 'gauntlets' | 'boots';
 
-export type MainStatType = 'atk' | 'hp' | 'critRate' | 'critDmg' | 'atkPct' | 'aspd';
+export type MainStatType = 'atk' | 'hp' | 'critRate' | 'critDmg' | 'atkPct' | 'dmgPct';
 
 export type SubStatKey =
   | 'atkPct'
   | 'critRate'
   | 'critDmg'
-  | 'aspd'
   | 'dmgPct'
   | 'armorPen'
   | 'bossDmg';
@@ -101,7 +100,6 @@ export interface HeroStats {
   hp: number;
   critRate: number;
   critDmg: number;
-  aspd: number;
   dmgPct: number;
   armorPen: number;
   bossDmg: number;
@@ -109,10 +107,47 @@ export interface HeroStats {
   offlinePower: number;
 }
 
+export type SpriteKey =
+  | 'slime'
+  | 'goblin'
+  | 'wolf'
+  | 'king_slime'
+  | 'scorpion'
+  | 'mummy'
+  | 'snake'
+  | 'golem'
+  | 'lizard'
+  | 'wisp'
+  | 'oni'
+  | 'dragon'
+  | 'snowman'
+  | 'ice_wolf'
+  | 'yeti'
+  | 'ice_dragon'
+  | 'skeleton'
+  | 'vampire'
+  | 'demon_knight'
+  | 'abyss_general'
+  | 'golden_slime'
+  | 'great_demon'
+  | 'stairs'
+  | 'chest_gold'
+  | 'chest_sealed'
+  | 'chest_mythic'
+  | 'chest_open'
+  | 'sanctum_key'
+  | 'loot_weapon'
+  | 'loot_armor'
+  | 'loot_accessory'
+  | 'loot_stones'
+  | 'loot_heal';
+
 export interface Enemy {
   name: string;
   icon: string;
+  spriteId: SpriteKey;
   isBoss: boolean;
+  isKeyKeeper?: boolean;
   isMidBoss: boolean;
   isSanctumBoss: boolean;
   isGreatDemon: boolean;
@@ -120,7 +155,6 @@ export interface Enemy {
   maxHp: number;
   hp: number;
   atk: number;
-  atkInterval: number;
   defRate: number;
 }
 
@@ -129,12 +163,43 @@ export interface MazeCell {
   y: number;
 }
 
+export interface DungeonRoom {
+  id: number;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  cx: number;
+  cy: number;
+  isMonsterHouse: boolean;
+  entrances: MazeCell[];
+}
+
+export type FloorLootType = 'chest' | 'weapon' | 'armor' | 'accessory' | 'stones' | 'heal';
+
 export interface MazeEvent {
-  type: 'chest';
+  id?: string;
+  type: FloorLootType;
   icon: string;
+  spriteId?: SpriteKey;
   x: number;
   y: number;
   triggered: boolean;
+  roomId?: number;
+}
+
+export interface FloorEnemy {
+  id: string;
+  x: number;
+  y: number;
+  roomId: number;
+  awakened: boolean;
+  prevCell?: MazeCell | null;
+  atkTimer: number;
+  shake: number;
+  flashTimer: number;
+  rareEscapeTimer: number;
+  enemy: Enemy;
 }
 
 export interface FloorPalette {

@@ -3,6 +3,7 @@ import {
   MAX_BAG_SIZE,
   MAX_EQUIP_LEVEL,
   MAX_STASH_SIZE,
+  MYTHIC_MAX_EQUIP_LEVEL,
   RARITIES,
   SLOT_ORDER,
   SLOTS,
@@ -132,7 +133,7 @@ export function EquippedWindow({
             💎 {fmt(stones)}
           </span>
           <span className="hidden text-[11px] font-medium text-slate-400 xl:inline">
-            Lv{MAX_EQUIP_LEVEL}・+{SUBSTAT_STEP_INTERVAL}毎解放
+            Lv{MAX_EQUIP_LEVEL}（神話Lv{MYTHIC_MAX_EQUIP_LEVEL}）・+{SUBSTAT_STEP_INTERVAL}毎解放
           </span>
         </>
       }
@@ -222,7 +223,7 @@ export function EquippedWindow({
                       {sInfo.unit}
                     </strong>{' '}
                     {it.rarity === 4 && (
-                      <span className="mythic-text text-[10px] font-extrabold">[追撃+1]</span>
+                      <span className="mythic-text text-[10px] font-extrabold">[上限+{MYTHIC_MAX_EQUIP_LEVEL}]</span>
                     )}
                   </div>
                   <div className="mt-0.5 truncate text-[10px] text-slate-400">

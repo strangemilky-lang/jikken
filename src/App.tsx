@@ -12,7 +12,6 @@ import { playSfx } from './game/audio';
 import {
   CHEST_BATCH_MAX,
   MAX_BAG_SIZE,
-  MAX_EQUIP_LEVEL,
   MAX_OFFLINE_SEC,
   MAX_STASH_SIZE,
   RARITIES,
@@ -32,6 +31,7 @@ import {
   fmt,
   formatUpgradeMessage,
   generateItem,
+  getMaxEquipLevel,
   getNextSelectedStorageId,
   getSalvageValue,
   getUpgradeCost,
@@ -155,6 +155,7 @@ export default function App() {
     floorEncounters: number;
     stepsToStairs: number;
     stairsFound: boolean;
+    hasFloorKey: boolean;
     explorePct: number;
     bossActive: boolean;
     paused: boolean;
@@ -165,6 +166,7 @@ export default function App() {
     floorEncounters: stateRef.current.floorEncounters,
     stepsToStairs: 0,
     stairsFound: false,
+    hasFloorKey: false,
     explorePct: 0,
     bossActive: false,
     paused: false,
@@ -630,7 +632,7 @@ export default function App() {
     const found = findItemById(itemId);
     if (!found) return;
     const item = found.item;
-    if (item.level >= MAX_EQUIP_LEVEL) return;
+    if (item.level >= getMaxEquipLevel(item)) return;
 
     const cost = getUpgradeCost(item);
     if (st.stones < cost) return;
@@ -1015,6 +1017,7 @@ export default function App() {
           floorEncounters: hudMeta.floorEncounters,
           stepsToStairs: hudMeta.stepsToStairs,
           stairsFound: hudMeta.stairsFound,
+          hasFloorKey: hudMeta.hasFloorKey,
           explorePct: hudMeta.explorePct,
           bossActive: hudMeta.bossActive,
           paused: hudMeta.paused,

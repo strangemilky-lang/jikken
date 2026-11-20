@@ -22,7 +22,7 @@ export function MilestoneModal({ open, onClose }: MilestoneModalProps) {
         </p>
         <div className="flex flex-col gap-1.5 rounded-lg border border-pink-400/35 bg-black/30 p-3 text-xs leading-relaxed text-slate-100">
           <div>🌌 <strong>裏世界（101階〜）開放</strong>：100階ごとに迷宮の色が変化</div>
-          <div>🌈 <strong>新レアリティ「ミシック」解禁</strong>：虹色装備＆攻撃時追撃ヒット+1</div>
+          <div>🌈 <strong>新レアリティ「ミシック」解禁</strong>：虹色装備＆強化上限 +40（サブステ成長最大10回）</div>
           <div>🔥 <strong>会心率100%突破解禁</strong>：100%超で超会心(2倍)、200%超で極会心(4倍)</div>
           <div>🎁 <strong>初回踏破記念</strong>：🌈 虹の宝箱 ×1 ＋ 📦 封印の宝箱 ×5 獲得</div>
         </div>

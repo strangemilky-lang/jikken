@@ -3,6 +3,7 @@ import { MAX_BAG_SIZE, MAX_STASH_SIZE, RARITIES, SLOT_ORDER, SLOTS } from '../ga
 import { calcHeroStats, fmt, getMainStatVal } from '../game/items';
 import { getNextManualStage, getPrevManualStage, isSanctumFloor } from '../game/sanctum';
 import type { DragItemPayload, GameState, SlotKey } from '../game/types';
+import { PixelSpriteIcon } from './PixelSpriteIcon';
 import { RarityName } from './RarityName';
 
 interface BottomStripProps {
@@ -113,7 +114,7 @@ export function BottomStrip({
                   : 'border-slate-400/25 bg-slate-800/70 text-slate-400'
               }`}
             >
-              <span>🗝️</span>
+              <PixelSpriteIcon spriteKey="sanctum_key" size={16} />
               <span data-testid="sanctum-key-count">{state.sanctumKeys}</span>
             </div>
 
@@ -127,52 +128,47 @@ export function BottomStrip({
           </div>
         </div>
 
-        {/* 8 Core Combat Stats (No predicted DPS) */}
-        <div className="grid grid-cols-4 gap-x-2 gap-y-0.5 rounded-lg border border-white/10 bg-black/25 px-2.5 py-1">
-          <div className="flex flex-col">
-            <span className="text-[10px] text-slate-400">攻撃力</span>
-            <span className="text-xs font-bold text-slate-100">{fmt(stats.atk)}</span>
+        {/* 7 Core Combat Stats (Turn-based: no Attack Speed) */}
+        <div className="flex flex-col gap-0.5 rounded-lg border border-white/10 bg-black/25 px-2.5 py-1">
+          <div className="grid grid-cols-4 gap-x-2">
+            <div className="flex flex-col">
+              <span className="text-[10px] text-slate-400">攻撃力</span>
+              <span className="text-xs font-bold text-slate-100">{fmt(stats.atk)}</span>
+            </div>
+            <div className="flex flex-col">
+              <span className="text-[10px] text-slate-400">最大HP</span>
+              <span className="text-xs font-bold text-slate-100">{fmt(stats.hp)}</span>
+            </div>
+            <div className="flex flex-col">
+              <span className="text-[10px] text-slate-400">会心率</span>
+              <span className="text-xs font-bold text-slate-100">
+                {stats.critRate > 200 ? (
+                  <span className="mythic-text">{stats.critRate.toFixed(1)}% (極)</span>
+                ) : stats.critRate > 100 ? (
+                  <span className="text-red-400">{stats.critRate.toFixed(1)}% (超)</span>
+                ) : (
+                  `${stats.critRate.toFixed(1)}%`
+                )}
+              </span>
+            </div>
+            <div className="flex flex-col">
+              <span className="text-[10px] text-slate-400">会心ダメ</span>
+              <span className="text-xs font-bold text-slate-100">{Math.round(stats.critDmg)}%</span>
+            </div>
           </div>
-          <div className="flex flex-col">
-            <span className="text-[10px] text-slate-400">最大HP</span>
-            <span className="text-xs font-bold text-slate-100">{fmt(stats.hp)}</span>
-          </div>
-          <div className="flex flex-col">
-            <span className="text-[10px] text-slate-400">会心率</span>
-            <span className="text-xs font-bold text-slate-100">
-              {stats.critRate > 200 ? (
-                <span className="mythic-text">{stats.critRate.toFixed(1)}% (極)</span>
-              ) : stats.critRate > 100 ? (
-                <span className="text-red-400">{stats.critRate.toFixed(1)}% (超)</span>
-              ) : (
-                `${stats.critRate.toFixed(1)}%`
-              )}
-            </span>
-          </div>
-          <div className="flex flex-col">
-            <span className="text-[10px] text-slate-400">会心ダメ</span>
-            <span className="text-xs font-bold text-slate-100">{Math.round(stats.critDmg)}%</span>
-          </div>
-          <div className="flex flex-col">
-            <span className="text-[10px] text-slate-400">攻撃速度</span>
-            <span className="text-xs font-bold text-slate-100">
-              {stats.aspd.toFixed(2)}/s
-              {stats.mythicCount > 0 ? (
-                <span className="ml-1 text-[10px] text-pink-300">({1 + stats.mythicCount}連)</span>
-              ) : null}
-            </span>
-          </div>
-          <div className="flex flex-col">
-            <span className="text-[10px] text-slate-400">与ダメ+</span>
-            <span className="text-xs font-bold text-amber-300">+{stats.dmgPct.toFixed(1)}%</span>
-          </div>
-          <div className="flex flex-col">
-            <span className="text-[10px] text-slate-400">防御貫通</span>
-            <span className="text-xs font-bold text-sky-300">{stats.armorPen.toFixed(1)}%</span>
-          </div>
-          <div className="flex flex-col">
-            <span className="text-[10px] text-slate-400">ボス特攻</span>
-            <span className="text-xs font-bold text-rose-300">+{stats.bossDmg.toFixed(1)}%</span>
+          <div className="grid grid-cols-3 gap-x-2 border-t border-white/5 pt-0.5">
+            <div className="flex flex-col">
+              <span className="text-[10px] text-slate-400">与ダメ+</span>
+              <span className="text-xs font-bold text-amber-300">+{stats.dmgPct.toFixed(1)}%</span>
+            </div>
+            <div className="flex flex-col">
+              <span className="text-[10px] text-slate-400">防御貫通</span>
+              <span className="text-xs font-bold text-sky-300">{stats.armorPen.toFixed(1)}%</span>
+            </div>
+            <div className="flex flex-col">
+              <span className="text-[10px] text-slate-400">ボス特攻</span>
+              <span className="text-xs font-bold text-rose-300">+{stats.bossDmg.toFixed(1)}%</span>
+            </div>
           </div>
         </div>
 
@@ -325,7 +321,12 @@ export function BottomStrip({
                 : 'border-slate-400/25 bg-slate-800 text-slate-200 hover:bg-slate-700'
             }`}
           >
-            <span>📦 宝箱</span>
+            <PixelSpriteIcon
+              spriteKey={state.mythicChests > 0 && state.chests === 0 ? 'chest_mythic' : 'chest_sealed'}
+              size={16}
+              animate={totalChests > 0}
+            />
+            <span>宝箱</span>
             <span data-testid="chest-count-badge">
               {state.mythicChests > 0 ? `${state.chests}+🌈${state.mythicChests}` : state.chests}
             </span>

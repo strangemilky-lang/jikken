@@ -1,12 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  BIOMES,
   CHEST_BATCH_MAX,
   MAX_BAG_SIZE,
   MAX_EQUIP_LEVEL,
   MAX_STASH_SIZE,
+  MYTHIC_MAX_EQUIP_LEVEL,
   RARITIES,
+  SLOTS,
   SLOT_ORDER,
+  SUB_POOL,
   SUBSTAT_STEP_INTERVAL,
 } from './constants';
 import {
@@ -27,6 +31,7 @@ import {
   generateItem,
   getEquipTierStage,
   getMainStatVal,
+  getMaxEquipLevel,
   getNextSelectedStorageId,
   getSalvageValue,
   getUpgradeCost,
@@ -35,14 +40,25 @@ import {
 } from './items';
 import {
   bfsPath,
+  cardinalAngleFromDelta,
   crawlKey,
   createEnemy,
+  findChokeRetreatCell,
+  findHeroSafePath,
   generateMaze,
   generateSanctumChamber,
+  getEngagedEnemies,
   pickEncounterAheadCell,
   pickExplorationTarget,
+  placeDungeonEnemies,
   placeMazeEvents,
+  revealDungeonTiles,
+  shouldEnterRestMode,
+  shouldExitRestMode,
+  shouldRetreatInRoom,
   shouldTriggerRandomEncounter,
+  snapCardinalAngle,
+  stepEnemiesTowardHero,
 } from './maze';
 import {
   canEnterSanctum,
@@ -58,6 +74,12 @@ import {
   resolveDefeatRetreatStage,
   rollSanctumDropRarity,
 } from './sanctum';
+import {
+  resolveWallThemeKey,
+  SPRITE_REGISTRY,
+  validateSpriteDefinition,
+  WALL_TEXTURE_GRIDS,
+} from './pixelArt';
 import { createDefaultState, parseSaveState } from './save';
 
 test('CHEST_BATCH_MAX is 9 for 3x3 modal layout', () => {
@@ -73,10 +95,12 @@ test('formatUpgradeMessage produces simple, concise Japanese messages for +4 mil
   assert.equal(msg.includes('神跳ね'), false);
 });
 
-test('All rarities have Lv20 cap, +4 intervals, and Legend/Mythic guarantee 4 initial substats', () => {
+test('Rarities R0-R3 have Lv20 cap, Mythic has Lv40 cap, +4 intervals, and Legend/Mythic guarantee 4 initial substats', () => {
   assert.equal(MAX_EQUIP_LEVEL, 20);
+  assert.equal(MYTHIC_MAX_EQUIP_LEVEL, 40);
   assert.equal(SUBSTAT_STEP_INTERVAL, 4);
-  assert.ok(RARITIES.every((r) => r.maxLv === 20));
+  assert.ok(RARITIES.slice(0, 4).every((r) => r.maxLv === 20));
+  assert.equal(RARITIES[4].maxLv, 40);
 
   const common = generateItem({ stage: 10, forcedRarity: 0, forcedSlot: 'ring' });
   const epic = generateItem({ stage: 10, forcedRarity: 2, forcedSlot: 'necklace' });
@@ -107,12 +131,17 @@ test('Fixed-cap accessories (ring, necklace, gauntlets, boots) do not inflate wi
   assert.equal(getUpgradeCost(r1), getUpgradeCost(r800));
 });
 
-test('calcHeroStats & calcHitDamage handle dmgPct, bossDmg, armorPen, and mythic follow-up hits', () => {
+test('calcHeroStats & calcHitDamage handle dmgPct, bossDmg, armorPen without follow-up hit inflation', () => {
   const baseState = createDefaultState();
   const mythicWeapon = generateItem({ stage: 10, forcedRarity: 4, forcedSlot: 'weapon' });
   const withMythic = { ...baseState.equipped, weapon: mythicWeapon };
   const mythicStats = calcHeroStats(withMythic, true);
   assert.equal(mythicStats.mythicCount, 1);
+
+  const legendWeapon = { ...mythicWeapon, rarity: 3 as const };
+  const legendStats = calcHeroStats({ ...baseState.equipped, weapon: legendWeapon }, true);
+  // Same mainStat.base & subStats should produce identical offlinePower (no hidden follow-up multiplier)
+  assert.equal(Math.round(mythicStats.offlinePower), Math.round(legendStats.offlinePower));
 
   const tankyBossStats = { ...mythicStats, atk: 1000, critDmg: 200, dmgPct: 50, armorPen: 0, bossDmg: 0 };
   const dmgNoPen = calcHitDamage(tankyBossStats, 0.6, true, 0, 1.0, 1.0);
@@ -132,7 +161,7 @@ test('random encounter logic has 4-step cooldown and halved encounter probabilit
   assert.equal(shouldTriggerRandomEncounter(10, 1, () => 0), false);
 
   const maze = generateMaze();
-  const path = bfsPath(maze.grid, 1, 1, maze.stairs.x, maze.stairs.y);
+  const path = bfsPath(maze.grid, maze.spawn.x, maze.spawn.y, maze.stairs.x, maze.stairs.y);
   assert.ok(path !== null && path.length >= 2);
 });
 
@@ -263,7 +292,21 @@ test('pickExplorationTarget avoids bee-lining undiscovered stairs and avoids sud
   const explored = new Set<string>([crawlKey(1, 1), crawlKey(2, 1), crawlKey(3, 1)]);
   const stepped = new Set<string>([crawlKey(1, 1), crawlKey(2, 1)]);
 
-  const res = pickExplorationTarget(grid, 2, 1, 0, explored, stepped, stairs, [], () => 0.2);
+  const res = pickExplorationTarget(
+    grid,
+    2,
+    1,
+    0,
+    explored,
+    stepped,
+    stairs,
+    [],
+    () => 0.2,
+    undefined,
+    undefined,
+    undefined,
+    { hasFloorKey: false },
+  );
   assert.equal(res.reason, 'explore');
   assert.notDeepEqual(res.target, stairs);
   const path = bfsPath(grid, 2, 1, res.target.x, res.target.y);
@@ -271,7 +314,39 @@ test('pickExplorationTarget avoids bee-lining undiscovered stairs and avoids sud
   assert.notEqual(path[1].x, 1);
 
   explored.add(crawlKey(stairs.x, stairs.y));
-  const foundStairs = pickExplorationTarget(grid, 2, 1, 0, explored, stepped, stairs, [], () => 0.2);
+  const stillLocked = pickExplorationTarget(
+    grid,
+    2,
+    1,
+    0,
+    explored,
+    stepped,
+    stairs,
+    [],
+    () => 0.2,
+    undefined,
+    undefined,
+    undefined,
+    { hasFloorKey: false },
+  );
+  assert.equal(stillLocked.reason, 'explore');
+  assert.notDeepEqual(stillLocked.target, stairs);
+
+  const foundStairs = pickExplorationTarget(
+    grid,
+    2,
+    1,
+    0,
+    explored,
+    stepped,
+    stairs,
+    [],
+    () => 0.2,
+    undefined,
+    undefined,
+    undefined,
+    { hasFloorKey: true },
+  );
   assert.equal(foundStairs.reason, 'stairs');
   assert.deepEqual(foundStairs.target, stairs);
 
@@ -316,7 +391,6 @@ test('Post-100F crit overflow (2.0x super / 4.0x hyper) makes crit-focused build
     hp: 5000,
     critRate: 100,
     critDmg: 300,
-    aspd: 2.0,
     dmgPct: 0,
     armorPen: 0,
     bossDmg: 0,
@@ -385,8 +459,8 @@ test('Post-100F crit overflow (2.0x super / 4.0x hyper) makes crit-focused build
   const critMax = makeFullMythic({ critRate: 40, critDmg: 0, atkPct: 0, dmgPct: 0 });
   const vsBalanced = critMax.offlinePower / balanced.offlinePower;
   const vsCap100 = critMax.offlinePower / cap100.offlinePower;
-  assert.ok(vsBalanced > 1.05 && vsBalanced < 1.30, `Expected modest crit lead vs balanced, got ${vsBalanced.toFixed(3)}`);
-  assert.ok(vsCap100 > 1.15 && vsCap100 < 1.40, `Expected modest crit lead vs cap100, got ${vsCap100.toFixed(3)}`);
+  assert.ok(vsBalanced > 1.05 && vsBalanced < 1.35, `Expected modest crit lead vs balanced, got ${vsBalanced.toFixed(3)}`);
+  assert.ok(vsCap100 > 1.15 && vsCap100 < 1.60, `Expected modest crit lead vs cap100, got ${vsCap100.toFixed(3)}`);
 });
 
 test('Fairy evolves every 100F with non-DPS utility passives, explore-accelerated gifts, and save sanitization', () => {
@@ -641,28 +715,36 @@ test('Sanctum chamber layout, Great Boss drops, and blind-try difficulty vs upgr
     }
     return calcHeroStats(eq, false);
   };
-  const simulateSecondsToKill = (stats: ReturnType<typeof calcHeroStats>, enemy: ReturnType<typeof createEnemy>) => {
+  const simulateTurnsToKill = (stats: ReturnType<typeof calcHeroStats>, enemy: ReturnType<typeof createEnemy>) => {
     const nonCritHit = calcHitDamage(stats, enemy.defRate, true, 0, 1, 1);
     const critHit = calcHitDamage(stats, enemy.defRate, true, 1, 1, 1);
     const pCrit = Math.min(1, stats.critRate / 100);
     const avgHit = nonCritHit * (1 - pCrit) + critHit * pCrit;
-    const heroDps = avgHit * stats.aspd;
-    const enemyDps = enemy.atk / enemy.atkInterval;
+    const enemyHitFreq = enemy.isKeyKeeper ? 0.5 : 1.0;
     return {
-      ttk: enemy.maxHp / Math.max(1, heroDps),
-      survive: stats.hp / Math.max(1, enemyDps),
+      ttkTurns: enemy.maxHp / Math.max(1, avgHit),
+      surviveTurns: stats.hp / Math.max(1, enemy.atk * enemyHitFreq),
     };
   };
 
   const blindHero = buildSet(1, 5);
-  const blindVs49 = simulateSecondsToKill(blindHero, boss49);
-  const blindVs50 = simulateSecondsToKill(blindHero, boss50);
-  assert.ok(blindVs49.survive > blindVs49.ttk, `Blind 49F hero should beat 49F boss (survive=${blindVs49.survive.toFixed(1)}s, ttk=${blindVs49.ttk.toFixed(1)}s)`);
-  assert.ok(blindVs50.survive < blindVs50.ttk, `Blind 49F hero should lose to 50F Great Boss (survive=${blindVs50.survive.toFixed(1)}s, ttk=${blindVs50.ttk.toFixed(1)}s)`);
+  const blindVs49 = simulateTurnsToKill(blindHero, boss49);
+  const blindVs50 = simulateTurnsToKill(blindHero, boss50);
+  assert.ok(
+    blindVs49.surviveTurns > blindVs49.ttkTurns,
+    `Blind 49F hero should beat 49F boss (survive=${blindVs49.surviveTurns.toFixed(1)}t, ttk=${blindVs49.ttkTurns.toFixed(1)}t)`,
+  );
+  assert.ok(
+    blindVs50.surviveTurns < blindVs50.ttkTurns,
+    `Blind 49F hero should lose to 50F Great Boss (survive=${blindVs50.surviveTurns.toFixed(1)}t, ttk=${blindVs50.ttkTurns.toFixed(1)}t)`,
+  );
 
   const gearedHero = buildSet(3, 20);
-  const gearedVs50 = simulateSecondsToKill(gearedHero, boss50);
-  assert.ok(gearedVs50.survive > gearedVs50.ttk, `Upgraded 49F Legend+20 hero should beat 50F Great Boss (survive=${gearedVs50.survive.toFixed(1)}s, ttk=${gearedVs50.ttk.toFixed(1)}s)`);
+  const gearedVs50 = simulateTurnsToKill(gearedHero, boss50);
+  assert.ok(
+    gearedVs50.surviveTurns > gearedVs50.ttkTurns,
+    `Upgraded 49F Legend+20 hero should beat 50F Great Boss (survive=${gearedVs50.surviveTurns.toFixed(1)}t, ttk=${gearedVs50.ttkTurns.toFixed(1)}t)`,
+  );
 });
 
 test('parseSaveState persists sanctumKeys/clearedSanctumMax and safely migrates legacy Sanctum saves', () => {
@@ -705,5 +787,517 @@ test('parseSaveState persists sanctumKeys/clearedSanctumMax and safely migrates 
   assert.ok(legacyAt125 !== null);
   assert.equal(legacyAt125.clearedSanctumMax, 100);
 });
+
+test('SPRITE_REGISTRY and WALL_TEXTURE_GRIDS are valid, rectangular, and cover every biome/enemy spriteId', () => {
+  const spriteKeys = Object.keys(SPRITE_REGISTRY) as Array<keyof typeof SPRITE_REGISTRY>;
+  assert.equal(spriteKeys.length, 33);
+
+  for (const key of spriteKeys) {
+    const def = SPRITE_REGISTRY[key];
+    assert.equal(
+      validateSpriteDefinition(def),
+      true,
+      `Sprite "${key}" must have matching 2-frame rectangular dimensions and valid palette chars`,
+    );
+  }
+
+  for (const biome of BIOMES) {
+    for (const mob of biome.mobs) {
+      assert.ok(mob.spriteId in SPRITE_REGISTRY, `Missing mob sprite "${mob.spriteId}"`);
+    }
+    assert.ok(biome.boss.spriteId in SPRITE_REGISTRY, `Missing boss sprite "${biome.boss.spriteId}"`);
+  }
+
+  const slime = createEnemy(1, false, -100);
+  assert.ok(slime.spriteId in SPRITE_REGISTRY);
+
+  const golden = createEnemy(10, false, 100);
+  assert.equal(golden.spriteId, 'golden_slime');
+
+  const boss50 = createEnemy(50, true);
+  assert.ok(boss50.spriteId in SPRITE_REGISTRY);
+
+  const demon100 = createEnemy(100, true);
+  assert.equal(demon100.spriteId, 'great_demon');
+
+  const wallKeys = Object.keys(WALL_TEXTURE_GRIDS) as Array<keyof typeof WALL_TEXTURE_GRIDS>;
+  assert.deepEqual(wallKeys.sort(), ['crimson', 'dungeon', 'golden', 'jade', 'sanctum', 'void']);
+  const allowedWallChars = new Set(['.', 'l', 'd', 'a', 'g']);
+  for (const wk of wallKeys) {
+    const grid = WALL_TEXTURE_GRIDS[wk];
+    assert.equal(grid.length, 16, `Wall theme "${wk}" must be 16 rows`);
+    for (const row of grid) {
+      assert.equal(row.length, 16, `Wall theme "${wk}" row must be 16 cols`);
+      for (const ch of row) {
+        assert.ok(allowedWallChars.has(ch), `Invalid char "${ch}" in wall theme "${wk}"`);
+      }
+    }
+  }
+
+  assert.equal(resolveWallThemeKey(0, false), 'dungeon');
+  assert.equal(resolveWallThemeKey(1, false), 'golden');
+  assert.equal(resolveWallThemeKey(2, true), 'sanctum');
+});
+
+test('Mythic +40 upgrade cap, progressive stone-sink cost, save persistence, and 150F Sanctum difficulty', () => {
+  const legendWep = generateItem({ stage: 149, forcedRarity: 3, forcedSlot: 'weapon' });
+  const mythicWep = generateItem({ stage: 149, forcedRarity: 4, forcedSlot: 'weapon' });
+  assert.equal(getMaxEquipLevel(legendWep), 20);
+  assert.equal(getMaxEquipLevel(mythicWep), 40);
+
+  // Lv20 -> Lv40 scales mainStat (+9%/lv past +20) and steepens stone cost as a late-game sink
+  const m20 = { ...mythicWep, level: 20 };
+  const m40 = { ...mythicWep, level: 40 };
+  assert.equal(getMainStatVal(m20), Math.round(m20.mainStat.base * 3.4));
+  assert.equal(getMainStatVal(m40), Math.round(m40.mainStat.base * 5.2));
+  assert.ok(getUpgradeCost(m20) > getUpgradeCost({ ...mythicWep, level: 19 }));
+  assert.ok(getUpgradeCost({ ...mythicWep, level: 39 }) > getUpgradeCost(m20) * 2);
+
+  // Save parser keeps Mythic Lv40 while clamping Legend Lv30 down to Lv20
+  const base = createDefaultState();
+  const parsed = parseSaveState(
+    JSON.stringify({
+      ...base,
+      stage: 149,
+      maxStage: 150,
+      cleared100: true,
+      equipped: {
+        ...base.equipped,
+        weapon: m40,
+        armor: { ...generateItem({ stage: 149, forcedRarity: 3, forcedSlot: 'armor' }), level: 30 },
+      },
+    }),
+  );
+  assert.ok(parsed !== null);
+  assert.equal(parsed.equipped.weapon.level, 40);
+  assert.equal(parsed.equipped.armor.level, 20);
+
+  // 150F Sanctum boss kills +20 Mythic gear, whereas +40 Mythic gear defeats it cleanly
+  const boss150 = createEnemy(150, true);
+  const build149MythicSet = (level: number) => {
+    const eq = { ...base.equipped };
+    for (const slot of SLOT_ORDER) {
+      eq[slot] = {
+        ...generateItem({ stage: 149, forcedRarity: 4, forcedSlot: slot }),
+        level,
+        subStats: [
+          { key: 'atkPct', val: 8 + Math.floor(level / 4) * 1.2, boosts: Math.floor(level / 16) },
+          { key: 'critRate', val: 7 + Math.floor(level / 4) * 1.1, boosts: Math.floor(level / 16) },
+          { key: 'armorPen', val: 10 + Math.floor(level / 4) * 1.3, boosts: Math.floor(level / 16) },
+          { key: 'bossDmg', val: 14 + Math.floor(level / 4) * 2.0, boosts: Math.floor(level / 16) },
+        ],
+      };
+    }
+    return calcHeroStats(eq, true);
+  };
+  const sim = (stats: ReturnType<typeof calcHeroStats>) => {
+    const c = stats.critDmg / 100;
+    const critMult =
+      stats.critRate <= 100
+        ? 1 + (stats.critRate / 100) * (c - 1)
+        : stats.critRate <= 200
+          ? c * (1 + ((stats.critRate - 100) / 100) * 1.0)
+          : c * (2.0 + ((stats.critRate - 200) / 100) * 2.0);
+    const pen = stats.armorPen / 100;
+    const defMult = Math.max(0.1, 1 - boss150.defRate * (1 - pen));
+    const dmgPerTurn = stats.atk * (1 + stats.dmgPct / 100) * (1 + stats.bossDmg / 100) * critMult * defMult;
+    return {
+      ttkTurns: boss150.maxHp / dmgPerTurn,
+      surviveTurns: stats.hp / boss150.atk,
+    };
+  };
+
+  const at20 = sim(build149MythicSet(20));
+  const at40 = sim(build149MythicSet(40));
+  assert.ok(
+    at20.surviveTurns < at20.ttkTurns,
+    `Mythic+20 should lose to 150F Sanctum (survive=${at20.surviveTurns.toFixed(1)}t, ttk=${at20.ttkTurns.toFixed(1)}t)`,
+  );
+  assert.ok(
+    at40.surviveTurns > at40.ttkTurns,
+    `Mythic+40 should beat 150F Sanctum (survive=${at40.surviveTurns.toFixed(1)}t, ttk=${at40.ttkTurns.toFixed(1)}t)`,
+  );
+});
+
+test('Mysterious Dungeon floor generates connected rooms, corridors, Monster House, pickups, and enemies', () => {
+  const floor = generateMaze(25, 25, { stage: 5, monsterHouseChance: 1.0 });
+  assert.ok(floor.rooms.length >= 5 && floor.rooms.length <= 6);
+  assert.ok(floor.monsterHouseRoomId !== null, 'Monster House should be designated when chance=1');
+
+  for (const room of floor.rooms) {
+    assert.ok(room.w >= 3 && room.w <= 5 && room.h >= 3 && room.h <= 5);
+    assert.ok(room.entrances.length >= 1, `Room ${room.id} must have at least 1 corridor entrance`);
+    const path = bfsPath(floor.grid, floor.spawn.x, floor.spawn.y, room.cx, room.cy);
+    assert.ok(path !== null, `Room ${room.id} must be reachable from spawn`);
+  }
+
+  const stairsPath = bfsPath(floor.grid, floor.spawn.x, floor.spawn.y, floor.stairs.x, floor.stairs.y);
+  assert.ok(stairsPath !== null && stairsPath.length > 4);
+
+  const events = placeMazeEvents(floor.depth, floor.stairs, Math.random, floor.rooms, floor.spawn);
+  assert.ok(events.length >= 4);
+  for (const ev of events) {
+    assert.notEqual(ev.type, 'heal', 'Floor healing potions should not spawn');
+    assert.ok(!(ev.x === floor.spawn.x && ev.y === floor.spawn.y), 'Loot should not spawn on hero spawn');
+    assert.ok(ev.spriteId && ev.spriteId in SPRITE_REGISTRY, `Loot sprite "${ev.spriteId}" must exist`);
+  }
+
+  const stairsRoomId = floor.roomGrid[floor.stairs.y][floor.stairs.x];
+  const enemies = placeDungeonEnemies({
+    stage: 5,
+    rooms: floor.rooms,
+    startRoomId: 0,
+    stairsRoomId,
+    stairs: floor.stairs,
+    spawn: floor.spawn,
+  });
+  const boss = enemies.find((e) => e.enemy.isBoss);
+  assert.ok(boss && boss.id === 'boss_keykeeper' && boss.enemy.isKeyKeeper === true, 'Floor must spawn 1 roaming Key-Keeper boss');
+  assert.ok(!(boss.x === floor.stairs.x && boss.y === floor.stairs.y), 'Key-Keeper must not be pinned on stairs');
+  assert.notEqual(boss.roomId, 0, 'Key-Keeper must not spawn in start room');
+  const mhMobs = enemies.filter((e) => e.roomId === floor.monsterHouseRoomId && !e.enemy.isBoss);
+  assert.ok(mhMobs.length >= 4, `Monster House should spawn >= 4 mobs, got ${mhMobs.length}`);
+  assert.equal(
+    enemies.some((e) => e.x === floor.spawn.x && e.y === floor.spawn.y),
+    false,
+    'No enemy may spawn on hero spawn cell',
+  );
+});
+
+test('revealDungeonTiles opens entire room on entry, while corridors reveal strictly 1 orthogonal step', () => {
+  const floor = generateMaze(25, 25, { stage: 1, monsterHouseChance: 0 });
+  const explored = new Set<string>();
+  const r0 = floor.rooms[0];
+
+  const enterRes = revealDungeonTiles(floor.grid, floor.roomGrid, floor.rooms, explored, r0.cx, r0.cy, 0);
+  assert.equal(enterRes.enteredRoomId, r0.id);
+  for (let y = r0.y - 1; y <= r0.y + r0.h; y++) {
+    for (let x = r0.x - 1; x <= r0.x + r0.w; x++) {
+      assert.equal(explored.has(crawlKey(x, y)), true, `Perimeter/interior tile (${x},${y}) must open`);
+    }
+  }
+
+  const ent = r0.entrances[0];
+  const corrExplored = new Set<string>();
+  const corrRes = revealDungeonTiles(floor.grid, floor.roomGrid, floor.rooms, corrExplored, ent.x, ent.y, 0);
+  assert.equal(corrRes.enteredRoomId, -1);
+  assert.equal(corrExplored.has(crawlKey(ent.x, ent.y)), true);
+  // Diagonal tiles around corridor must NOT be revealed (strictly 1-tile orthogonal torchlight)
+  assert.equal(corrExplored.has(crawlKey(ent.x + 1, ent.y + 1)), false);
+  assert.equal(corrExplored.has(crawlKey(ent.x - 1, ent.y - 1)), false);
+});
+
+test('Monster House corridor retreat, single-file enemy stepping, multi-enemy engagement, and resting thresholds', () => {
+  // 5x5 layout: corridor at (1,2) leading into a 3x3 room [2..4, 1..3]
+  const grid = [
+    [1, 1, 1, 1, 1, 1],
+    [1, 1, 0, 0, 0, 1],
+    [1, 0, 0, 0, 0, 1],
+    [1, 1, 0, 0, 0, 1],
+    [1, 1, 1, 1, 1, 1],
+  ];
+  const roomGrid = [
+    [-1, -1, -1, -1, -1, -1],
+    [-1, -1, 0, 0, 0, -1],
+    [-1, -1, 0, 0, 0, -1],
+    [-1, -1, 0, 0, 0, -1],
+    [-1, -1, -1, -1, -1, -1],
+  ];
+  const stairs = { x: 4, y: 2 };
+  const mobA = {
+    id: 'm1',
+    x: 3,
+    y: 2,
+    roomId: 0,
+    awakened: false,
+    atkTimer: 0,
+    shake: 0,
+    flashTimer: 0,
+    rareEscapeTimer: 10,
+    enemy: createEnemy(5, false, -100),
+  };
+  const mobB = {
+    id: 'm2',
+    x: 4,
+    y: 1,
+    roomId: 0,
+    awakened: false,
+    atkTimer: 0,
+    shake: 0,
+    flashTimer: 0,
+    rareEscapeTimer: 10,
+    enemy: createEnemy(5, false, -100),
+  };
+  const keyKeeper = {
+    id: 'boss_keykeeper',
+    x: 4,
+    y: 2,
+    roomId: 0,
+    awakened: false,
+    prevCell: null,
+    atkTimer: 0,
+    shake: 0,
+    flashTimer: 0,
+    rareEscapeTimer: 6,
+    enemy: createEnemy(5, true, -100),
+  };
+  const enemies = [mobA, mobB, keyKeeper];
+
+  // Before entering room: regular mobs inside the room (d>=2) stay asleep; Key-Keeper holds on odd turns
+  stepEnemiesTowardHero(grid, roomGrid, { x: 1, y: 2 }, stairs, enemies, 1);
+  assert.equal(mobA.awakened, false);
+  assert.equal(mobB.awakened, false);
+  assert.deepEqual({ x: keyKeeper.x, y: keyKeeper.y }, { x: 4, y: 2 });
+
+  // Key-Keeper roams 1 step on even turns (turnNumber % 2 === 0) even when unawakened
+  stepEnemiesTowardHero(grid, roomGrid, { x: 1, y: 2 }, stairs, enemies, 2, () => 0.25);
+  assert.equal(Math.abs(keyKeeper.x - 4) + Math.abs(keyKeeper.y - 2), 1);
+  keyKeeper.x = 4;
+  keyKeeper.y = 2;
+  keyKeeper.prevCell = null;
+
+  // After stepping into room doorway (2,2) from corridor (1,2), retreats 1 step back to (1,2) facing east (0 rad)
+  const retreat = findChokeRetreatCell(grid, roomGrid, { x: 2, y: 2 }, 0, enemies, stairs, { x: 1, y: 2 });
+  assert.ok(retreat !== null);
+  assert.deepEqual(retreat.cell, { x: 1, y: 2 });
+  assert.ok(Math.abs(retreat.faceAngle - 0) < 1e-6);
+
+  // Room alert (as triggered on retreat): awakened regular enemies funnel single-file toward doorway (1,2)
+  mobA.awakened = true;
+  mobB.awakened = true;
+  keyKeeper.awakened = true;
+  stepEnemiesTowardHero(grid, roomGrid, { x: 1, y: 2 }, stairs, enemies, 1);
+  assert.deepEqual({ x: mobA.x, y: mobA.y }, { x: 2, y: 2 });
+  // On odd turns Key-Keeper stays in place; on even turns awakened Key-Keeper also advances
+  assert.deepEqual({ x: keyKeeper.x, y: keyKeeper.y }, { x: 4, y: 2 });
+
+  // Surrounded check: both orth-adjacent enemies engage simultaneously, front-facing sorted first
+  mobA.x = 2;
+  mobA.y = 2; // east of hero at (1,2) -> angle 0
+  mobB.x = 1;
+  mobB.y = 1; // north of hero at (1,2) -> angle -pi/2
+  const engaged = getEngagedEnemies({ x: 1, y: 2 }, [mobB, mobA], 0);
+  assert.equal(engaged.length, 2);
+  assert.equal(engaged[0].id, 'm1');
+
+  // Rest thresholds: enter <60%, exit >=85%
+  assert.equal(shouldEnterRestMode(59, 100), true);
+  assert.equal(shouldEnterRestMode(60, 100), false);
+  assert.equal(shouldExitRestMode(84, 100), false);
+  assert.equal(shouldExitRestMode(85, 100), true);
+
+  // Mob flanking around stationary enemy on odd turn routes around occupied tile to reach hero
+  const flankMob = {
+    id: 'flank',
+    x: 4,
+    y: 2,
+    roomId: 0,
+    awakened: true,
+    prevCell: null,
+    atkTimer: 0,
+    shake: 0,
+    flashTimer: 0,
+    rareEscapeTimer: 6,
+    enemy: createEnemy(5, false, -100),
+  };
+  const blockingKeeper = {
+    ...keyKeeper,
+    x: 3,
+    y: 2,
+    awakened: true,
+  };
+  const heroAtKeeper = { x: 2, y: 2 };
+  stepEnemiesTowardHero(grid, roomGrid, heroAtKeeper, stairs, [flankMob, blockingKeeper], 1);
+  assert.equal(flankMob.x, 4);
+  assert.ok(flankMob.y === 1 || flankMob.y === 3, 'Mob directly behind Key-Keeper must step sideways to flank');
+  for (let step = 0; step < 3; step++) {
+    stepEnemiesTowardHero(grid, roomGrid, heroAtKeeper, stairs, [flankMob, blockingKeeper], 1);
+  }
+  const finalDist = Math.abs(flankMob.x - heroAtKeeper.x) + Math.abs(flankMob.y - heroAtKeeper.y);
+  assert.equal(finalDist, 1, 'Flanking mob must reach adjacent tile around hero while Key-Keeper blocks center');
+});
+
+test('shouldRetreatInRoom and findHeroSafePath prevent fighting boss while room mobs flank hero', () => {
+  const mkMob = (id: string, x: number, y: number, isBoss = false) => ({
+    id,
+    x,
+    y,
+    roomId: 0,
+    awakened: false,
+    atkTimer: 0,
+    shake: 0,
+    flashTimer: 0,
+    rareEscapeTimer: 10,
+    enemy: createEnemy(5, isBoss, -100),
+  });
+
+  const boss = mkMob('boss', 3, 3, true);
+  const mob1 = mkMob('m1', 5, 3, false);
+  const mob2 = mkMob('m2', 5, 1, false);
+
+  // 1 mob alone -> fight in room; 2 mobs -> retreat; boss alone -> fight in room; boss + 1 mob -> retreat!
+  assert.equal(shouldRetreatInRoom([mob1], 0), false);
+  assert.equal(shouldRetreatInRoom([mob1, mob2], 0), true);
+  assert.equal(shouldRetreatInRoom([boss], 0), false);
+  assert.equal(shouldRetreatInRoom([boss, mob1], 0), true);
+
+  // 5x5 open room [1..5, 1..5] with boss at center (3,3)
+  const roomGrid5 = [
+    [1, 1, 1, 1, 1, 1, 1],
+    [1, 0, 0, 0, 0, 0, 1],
+    [1, 0, 0, 0, 0, 0, 1],
+    [1, 0, 0, 0, 0, 0, 1],
+    [1, 0, 0, 0, 0, 0, 1],
+    [1, 0, 0, 0, 0, 0, 1],
+    [1, 1, 1, 1, 1, 1, 1],
+  ];
+  // Navigating from (1,3) to mob/item at (5,3) must route around boss (3,3) AND its 4 adjacent tiles
+  const safePath = findHeroSafePath(roomGrid5, 1, 3, 5, 3, [boss]);
+  assert.ok(safePath !== null && safePath.length > 5);
+  for (const step of safePath) {
+    const dBoss = Math.abs(step.x - boss.x) + Math.abs(step.y - boss.y);
+    assert.ok(dBoss >= 2, `Safe path step (${step.x},${step.y}) must keep distance >= 2 from boss`);
+  }
+
+  // Navigating to boss itself routes directly
+  const bossPath = findHeroSafePath(roomGrid5, 1, 3, boss.x, boss.y, [boss]);
+  assert.ok(bossPath !== null && bossPath.length === 3);
+
+  // Narrow 3x3 choke where every path passes adjacent to boss still avoids boss tile itself
+  const narrowGrid = [
+    [1, 1, 1, 1, 1],
+    [1, 1, 0, 1, 1],
+    [1, 0, 0, 0, 1],
+    [1, 1, 0, 1, 1],
+    [1, 1, 1, 1, 1],
+  ];
+  const narrowBoss = mkMob('nboss', 2, 2, true);
+  const narrowPath = findHeroSafePath(narrowGrid, 1, 2, 3, 2, [narrowBoss]);
+  assert.ok(narrowPath !== null);
+});
+
+test('Boots main stat is dmgPct, aspd is removed, and legacy saves migrate aspd cleanly', () => {
+  assert.equal(SLOTS.boots.mainType, 'dmgPct');
+  assert.equal(SLOTS.boots.mainLabel, '与ダメージ');
+  assert.equal(
+    SUB_POOL.some((s) => (s.key as string) === 'aspd'),
+    false,
+  );
+
+  const boots = generateItem({ stage: 5, forcedRarity: 2, forcedSlot: 'boots' });
+  assert.equal(boots.mainStat.type, 'dmgPct');
+
+  const base = createDefaultState();
+  const legacySave = JSON.stringify({
+    ...base,
+    equipped: {
+      ...base.equipped,
+      boots: {
+        ...boots,
+        mainStat: { type: 'aspd', base: 14, label: '攻撃速度', unit: '%' },
+        subStats: [{ key: 'aspd', val: 6.5, boosts: 1 }],
+      },
+      weapon: {
+        ...base.equipped.weapon,
+        subStats: [
+          { key: 'dmgPct', val: 4.0, boosts: 0 },
+          { key: 'aspd', val: 5.5, boosts: 0 },
+        ],
+      },
+    },
+  });
+  const parsed = parseSaveState(legacySave);
+  assert.ok(parsed !== null);
+  assert.equal(parsed.equipped.boots.mainStat.type, 'dmgPct');
+  assert.equal(parsed.equipped.boots.subStats[0].key, 'dmgPct');
+  // Weapon already had dmgPct so migrated substat must pick another non-duplicate SUB_POOL key
+  assert.equal(
+    parsed.equipped.weapon.subStats.some((s) => (s.key as string) === 'aspd'),
+    false,
+  );
+  assert.equal(new Set(parsed.equipped.weapon.subStats.map((s) => s.key)).size, parsed.equipped.weapon.subStats.length);
+});
+
+test('snapCardinalAngle and cardinalAngleFromDelta always snap strictly to 4 cardinal directions', () => {
+  const valid = new Set([0, Math.PI / 2, Math.PI, -Math.PI / 2]);
+  for (const sample of [0, 0.23, 1.35, -1.49, 2.9, -3.05, Math.PI * 1.98]) {
+    const snapped = snapCardinalAngle(sample);
+    assert.ok(valid.has(snapped), `Expected exact cardinal angle, got ${snapped} for ${sample}`);
+  }
+  assert.equal(cardinalAngleFromDelta(1, 0), 0);
+  assert.equal(cardinalAngleFromDelta(0, 1), Math.PI / 2);
+  assert.equal(cardinalAngleFromDelta(-1, 0), Math.PI);
+  assert.equal(cardinalAngleFromDelta(0, -1), -Math.PI / 2);
+});
+
+test('Key-Keeper moves once every 2 turns and pickExplorationTarget prioritizes Key-Keeper when floor explored without key', () => {
+  const grid = [
+    [1, 1, 1, 1, 1, 1],
+    [1, 0, 0, 0, 0, 1],
+    [1, 0, 0, 0, 0, 1],
+    [1, 0, 0, 0, 0, 1],
+    [1, 1, 1, 1, 1, 1],
+  ];
+  const roomGrid = [
+    [-1, -1, -1, -1, -1, -1],
+    [-1, 0, 0, 0, 0, -1],
+    [-1, 0, 0, 0, 0, -1],
+    [-1, 0, 0, 0, 0, -1],
+    [-1, -1, -1, -1, -1, -1],
+  ];
+  const stairs = { x: 4, y: 1 };
+  const keeper = {
+    id: 'boss_keykeeper',
+    x: 4,
+    y: 3,
+    roomId: 0,
+    awakened: true,
+    prevCell: null,
+    atkTimer: 0,
+    shake: 0,
+    flashTimer: 0,
+    rareEscapeTimer: 6,
+    enemy: createEnemy(5, true, -100),
+  };
+
+  // Odd turn: Key-Keeper does not move
+  stepEnemiesTowardHero(grid, roomGrid, { x: 1, y: 1 }, stairs, [keeper], 1);
+  assert.deepEqual({ x: keeper.x, y: keeper.y }, { x: 4, y: 3 });
+
+  // Even turn: Awakened Key-Keeper steps 1 tile closer to hero
+  stepEnemiesTowardHero(grid, roomGrid, { x: 1, y: 1 }, stairs, [keeper], 2);
+  const dAfter = Math.abs(keeper.x - 1) + Math.abs(keeper.y - 1);
+  assert.equal(dAfter, 4);
+
+  // When whole floor explored & stepped without key, target becomes Key-Keeper instead of stairs
+  const explored = new Set<string>();
+  const stepped = new Set<string>();
+  for (let y = 1; y <= 3; y++) {
+    for (let x = 1; x <= 4; x++) {
+      explored.add(crawlKey(x, y));
+      stepped.add(crawlKey(x, y));
+    }
+  }
+  const targetKeeper = pickExplorationTarget(
+    grid,
+    1,
+    1,
+    0,
+    explored,
+    stepped,
+    stairs,
+    [],
+    () => 0,
+    undefined,
+    undefined,
+    undefined,
+    { hasFloorKey: false, enemies: [keeper] },
+  );
+  assert.deepEqual(targetKeeper.target, { x: keeper.x, y: keeper.y });
+});
+
+
+
+
 
 

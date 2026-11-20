@@ -128,10 +128,10 @@ export function FairyWidget({
           data-testid="fairy-toggle-btn"
           onClick={onToggleCollapse}
           title={`${profile.title}を開く`}
-          className="flex items-center gap-1.5 rounded-lg border px-2 py-1 text-xs font-bold text-slate-100 shadow-lg backdrop-blur-sm transition hover:brightness-110"
+          className="flex items-center gap-1.5 rounded-lg border px-2 py-1 text-xs font-bold text-slate-100 shadow-lg transition hover:brightness-110"
           style={{
             borderColor: hasGift ? profile.accentColor : 'rgba(148,163,184,0.35)',
-            backgroundColor: 'rgba(15, 23, 42, 0.88)',
+            backgroundColor: 'rgba(15, 23, 42, 0.94)',
           }}
         >
           <FairySprite profile={profile} hasGift={hasGift} compact />
@@ -160,7 +160,7 @@ export function FairyWidget({
       data-testid="fairy-widget"
       data-fairy-collapsed="false"
       data-fairy-rank={profile.rank}
-      className="flex w-[224px] flex-col gap-1.5 rounded-xl border bg-[#0f172a]/90 p-2 shadow-2xl backdrop-blur-sm max-sm:w-[178px] max-sm:gap-1 max-sm:p-1.5"
+      className="flex w-[224px] flex-col gap-1.5 rounded-xl border bg-[#0f172a]/95 p-2 shadow-2xl max-sm:w-[178px] max-sm:gap-1 max-sm:p-1.5"
       style={{
         borderColor: hasGift ? profile.accentColor : 'rgba(148, 163, 184, 0.28)',
       }}

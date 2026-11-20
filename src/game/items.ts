@@ -2,6 +2,7 @@ import {
   BASE_NAMES,
   HERO_BASE,
   MAX_BAG_SIZE,
+  MAX_EQUIP_LEVEL,
   MAX_SUBSTAT_COUNT,
   PREFIXES,
   RARITIES,
@@ -189,18 +190,29 @@ export function generateItem(opts: GenerateItemOptions): Item {
   };
 }
 
+export function getMaxEquipLevel(item: Pick<Item, 'rarity'> | null | undefined): number {
+  if (!item) return MAX_EQUIP_LEVEL;
+  return RARITIES[item.rarity]?.maxLv ?? MAX_EQUIP_LEVEL;
+}
+
 export function getMainStatVal(item: Item | null | undefined): number {
   if (!item) return 0;
-  return Math.round(item.mainStat.base * (1 + item.level * 0.12));
+  if (item.level <= MAX_EQUIP_LEVEL) {
+    return Math.round(item.mainStat.base * (1 + item.level * 0.12));
+  }
+  const over = item.level - MAX_EQUIP_LEVEL;
+  return Math.round(item.mainStat.base * (1 + MAX_EQUIP_LEVEL * 0.12 + over * 0.09));
 }
 
 export function getUpgradeCost(item: Item): number {
   const slotInfo = SLOTS[item.slot];
   if (slotInfo.isFixedCap) {
-    // 固定上限アクセは階層によらずレア度・強化Lvのみでコスト決定
-    return Math.max(4, Math.round((8 + item.rarity * 7) * (1 + item.level * 0.45)));
+    // 固定上限アクセは階層によらずレア度・強化Lvのみでコスト決定（+20以降は高騰）
+    const overMult = item.level >= MAX_EQUIP_LEVEL ? (item.level - MAX_EQUIP_LEVEL + 1) * 0.95 : 0;
+    return Math.max(4, Math.round((8 + item.rarity * 7) * (1 + item.level * 0.45 + overMult)));
   }
-  return Math.max(2, Math.round((3 + item.stage * 1.4) * (1 + item.level * 0.45) * (1 + item.rarity * 0.3)));
+  const overMult = item.level >= MAX_EQUIP_LEVEL ? (item.level - MAX_EQUIP_LEVEL + 1) * 0.28 : 0;
+  return Math.max(2, Math.round((3 + item.stage * 1.4) * (1 + item.level * 0.45 + overMult) * (1 + item.rarity * 0.3)));
 }
 
 export function getSalvageValue(item: Item, bonusPct = 0): number {
@@ -220,7 +232,6 @@ export function calcHeroStats(equipSet: EquippedSet, cleared100: boolean): HeroS
   let critRate = HERO_BASE.critRate;
   let critDmg = HERO_BASE.critDmg;
   let atkPct = 0;
-  let aspdPct = 0;
   let dmgPct = 0;
   let armorPen = 0;
   let bossDmg = 0;
@@ -236,13 +247,12 @@ export function calcHeroStats(equipSet: EquippedSet, cleared100: boolean): HeroS
     else if (it.mainStat.type === 'critRate') critRate += mVal;
     else if (it.mainStat.type === 'critDmg') critDmg += mVal;
     else if (it.mainStat.type === 'atkPct') atkPct += mVal;
-    else if (it.mainStat.type === 'aspd') aspdPct += mVal;
+    else if (it.mainStat.type === 'dmgPct') dmgPct += mVal;
 
     for (const sub of it.subStats) {
       if (sub.key === 'atkPct') atkPct += sub.val;
       else if (sub.key === 'critRate') critRate += sub.val;
       else if (sub.key === 'critDmg') critDmg += sub.val;
-      else if (sub.key === 'aspd') aspdPct += sub.val;
       else if (sub.key === 'dmgPct') dmgPct += sub.val;
       else if (sub.key === 'armorPen') armorPen += sub.val;
       else if (sub.key === 'bossDmg') bossDmg += sub.val;
@@ -255,7 +265,6 @@ export function calcHeroStats(equipSet: EquippedSet, cleared100: boolean): HeroS
   const maxCritCap = cleared100 ? 300 : 100;
   const finalCritRate = clamp(critRate, 0, maxCritCap);
   const finalCritDmg = Math.max(100, critDmg);
-  const totalAspd = clamp(HERO_BASE.aspd * (1 + aspdPct / 100), 0.2, 8.0);
 
   const c = finalCritDmg / 100;
   let critExpectedMult = 1;
@@ -267,15 +276,13 @@ export function calcHeroStats(equipSet: EquippedSet, cleared100: boolean): HeroS
     critExpectedMult = c * (2.0 + (Math.min(finalCritRate - 200, 100) / 100) * 2.0);
   }
 
-  const hitMult = 1 + mythicCount * 0.5;
-  const offlinePower = totalAtk * (1 + dmgPct / 100) * critExpectedMult * hitMult * totalAspd;
+  const offlinePower = totalAtk * (1 + dmgPct / 100) * critExpectedMult;
 
   return {
     atk: totalAtk,
     hp: totalHp,
     critRate: finalCritRate,
     critDmg: finalCritDmg,
-    aspd: totalAspd,
     dmgPct,
     armorPen: Math.min(100, armorPen),
     bossDmg,

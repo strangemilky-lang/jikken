@@ -1,5 +1,5 @@
-import { MAX_EQUIP_LEVEL, RARITIES, SLOTS, SUB_MAP, SUBSTAT_STEP_INTERVAL } from '../game/constants';
-import { fmt, formatStatDiff, getMainStatVal, getSalvageValue, getUpgradeCost } from '../game/items';
+import { MAX_EQUIP_LEVEL, MYTHIC_MAX_EQUIP_LEVEL, RARITIES, SLOTS, SUB_MAP, SUBSTAT_STEP_INTERVAL } from '../game/constants';
+import { fmt, formatStatDiff, getMainStatVal, getMaxEquipLevel, getSalvageValue, getUpgradeCost } from '../game/items';
 import type { Item, ItemLocation } from '../game/types';
 import { RarityName } from './RarityName';
 
@@ -52,7 +52,8 @@ export function ItemDetailPanel({
   const rInfo = RARITIES[item.rarity];
   const sInfo = SLOTS[item.slot];
   const upgCost = getUpgradeCost(item);
-  const isMaxLv = item.level >= MAX_EQUIP_LEVEL;
+  const maxLv = getMaxEquipLevel(item);
+  const isMaxLv = item.level >= maxLv;
   const canAfford = stones >= upgCost;
   const nextBoostLv = item.level + (SUBSTAT_STEP_INTERVAL - (item.level % SUBSTAT_STEP_INTERVAL));
   const salvageVal = getSalvageValue(item, salvageBonusPct);
@@ -88,14 +89,14 @@ export function ItemDetailPanel({
               {sInfo.isFixedCap ? `固定上限 (取得St.${item.stage})` : `階層装備: St.${item.stage}`}
             </span>
             <span>
-              強化: {item.level} / {MAX_EQUIP_LEVEL}{' '}
+              強化: {item.level} / {maxLv}{' '}
               {isEquipped && <strong className="text-sky-400">[装備中]</strong>}
               {location === 'stash' && <strong className="text-emerald-300">[倉庫保管中]</strong>}
             </span>
           </div>
           {item.rarity === 4 && (
             <div className="mythic-text mt-1 text-[11px] font-extrabold">
-              ✨ ミシック固有：攻撃時に追撃ヒット +1（威力50%）
+              ✨ ミシック特性：強化上限 +{MYTHIC_MAX_EQUIP_LEVEL}（サブステ成長最大10回）
             </div>
           )}
         </div>
@@ -103,7 +104,7 @@ export function ItemDetailPanel({
         {/* Main & Substats */}
         <div className="flex flex-col gap-1.5 rounded-lg border border-white/10 bg-black/25 px-2.5 py-2">
           <div className="text-[10px] font-bold text-slate-400">
-            メインステータス（強化で毎回+12%）
+            メインステータス（{item.level >= MAX_EQUIP_LEVEL ? '+21以降は毎回+9%' : '強化で毎回+12%'}）
           </div>
           <div className="flex items-center justify-between rounded bg-white/[0.03] px-2 py-1 text-xs">
             <span className="text-slate-200">{sInfo.mainLabel}</span>
