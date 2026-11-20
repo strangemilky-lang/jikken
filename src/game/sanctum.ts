@@ -179,3 +179,14 @@ export function rollSanctumDropRarity(
   }
   return r < 0.55 ? 3 : 2;
 }
+
+export const SANCTUM_KEY_DROP_CHANCE = 0.15;
+
+export function rollSanctumKeyDrop(
+  isRegularKeyKeeper: boolean,
+  rng: () => number = Math.random,
+): boolean {
+  if (!isRegularKeyKeeper) return false;
+  return rng() < SANCTUM_KEY_DROP_CHANCE;
+}
+

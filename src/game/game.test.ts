@@ -48,6 +48,7 @@ import {
   generateMaze,
   generateSanctumChamber,
   getEngagedEnemies,
+  getTurnSpeedScale,
   pickEncounterAheadCell,
   pickExplorationTarget,
   placeDungeonEnemies,
@@ -73,6 +74,8 @@ import {
   resolveBossVictoryProgression,
   resolveDefeatRetreatStage,
   rollSanctumDropRarity,
+  rollSanctumKeyDrop,
+  SANCTUM_KEY_DROP_CHANCE,
 } from './sanctum';
 import {
   resolveWallThemeKey,
@@ -1295,6 +1298,26 @@ test('Key-Keeper moves once every 2 turns and pickExplorationTarget prioritizes 
   );
   assert.deepEqual(targetKeeper.target, { x: keeper.x, y: keeper.y });
 });
+
+test('getTurnSpeedScale slows base x1 pace to 1/3 while scaling x2 and x4 proportionally', () => {
+  const s1 = getTurnSpeedScale(1);
+  const s2 = getTurnSpeedScale(2);
+  const s4 = getTurnSpeedScale(4);
+  assert.ok(Math.abs(s1 - 1 / 3) < 1e-6);
+  assert.ok(Math.abs(s2 - s1 * 2) < 1e-6);
+  assert.ok(Math.abs(s4 - s1 * 4) < 1e-6);
+});
+
+test('Sanctum key drops probabilistically from any regular Key-Keeper boss at reduced chance', () => {
+  assert.ok(SANCTUM_KEY_DROP_CHANCE > 0 && SANCTUM_KEY_DROP_CHANCE <= 0.2);
+  assert.equal(rollSanctumKeyDrop(true, () => 0.01), true);
+  assert.equal(rollSanctumKeyDrop(true, () => SANCTUM_KEY_DROP_CHANCE - 0.001), true);
+  assert.equal(rollSanctumKeyDrop(true, () => SANCTUM_KEY_DROP_CHANCE), false);
+  assert.equal(rollSanctumKeyDrop(true, () => 0.5), false);
+  assert.equal(rollSanctumKeyDrop(false, () => 0.0), false);
+});
+
+
 
 
 

@@ -1259,3 +1259,10 @@ export function cardinalAngleFromDelta(dx: number, dy: number): number {
   }
   return dy >= 0 ? Math.PI / 2 : -Math.PI / 2;
 }
+
+export const BASE_TURN_SPEED_FACTOR = 1 / 3;
+
+export function getTurnSpeedScale(speed: 1 | 2 | 4): number {
+  return speed * BASE_TURN_SPEED_FACTOR;
+}
+

@@ -107,7 +107,7 @@ export function BottomStrip({
 
           <div className="flex shrink-0 items-center gap-1.5">
             <div
-              title="玄室の鍵（10層ごとの中ボス撃破で獲得。50層ごとの玄室入場ごとに1本消費）"
+              title="玄室の鍵（各階の鍵持ちボス撃破時に一定確率で獲得。50層ごとの玄室入場ごとに1本消費）"
               className={`flex shrink-0 items-center gap-1 rounded-md border px-2 py-0.5 text-xs font-bold ${
                 state.sanctumKeys > 0
                   ? 'border-purple-400/50 bg-purple-500/15 text-purple-200'

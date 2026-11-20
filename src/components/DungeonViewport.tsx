@@ -29,6 +29,7 @@ import {
   generateSanctumChamber,
   getBiome,
   getEngagedEnemies,
+  getTurnSpeedScale,
   pickExplorationTarget,
   placeDungeonEnemies,
   placeMazeEvents,
@@ -50,6 +51,7 @@ import {
   resolveBossVictoryProgression,
   resolveDefeatRetreatStage,
   rollSanctumDropRarity,
+  rollSanctumKeyDrop,
 } from '../game/sanctum';
 import type {
   CrawlSizeMode,
@@ -941,13 +943,17 @@ export function DungeonViewport({
         } else {
           showLootBanner(`🏛️ ${st.stage}F玄室踏破！高品質装備×2＆宝箱×3 獲得！`, '#fbbf24', false);
         }
-      } else if (enemy.isMidBoss) {
-        st.sanctumKeys += 1;
-        st.chests += 2;
-        spawnFloatText(50, 18, '🗝️ 玄室の鍵 +1!', 'float-loot');
-        callbacksRef.current.onAddLog('守護者撃破！ 🗝️玄室の鍵+1 & 📦封印の宝箱+2', '#c084fc');
-      } else if (isBoss) {
-        st.chests += 1;
+      }
+
+      let droppedSanctumKey = false;
+      if (!enemy.isRareEscape && !enemy.isSanctumBoss && isBoss) {
+        const chestGain = enemy.isMidBoss ? 2 : 1;
+        st.chests += chestGain;
+        droppedSanctumKey = rollSanctumKeyDrop(true);
+        if (droppedSanctumKey) {
+          st.sanctumKeys += 1;
+          spawnFloatText(50, 18, '🗝️ 玄室の鍵 +1!', 'float-loot');
+        }
       }
 
       if (!enemy.isRareEscape && !enemy.isSanctumBoss) {
@@ -1028,15 +1034,20 @@ export function DungeonViewport({
         sim.hasFloorKey = true;
         sim.exploreTarget = null;
         sim.path = null;
-        if (!enemy.isMidBoss) {
+        const chestGain = enemy.isMidBoss ? 2 : 1;
+        if (droppedSanctumKey) {
           callbacksRef.current.onAddLog(
-            `🔑 ${enemy.name}を撃破！階層の鍵を入手！(📦+1)`,
+            `🗝️ ${enemy.name}を撃破！階層の鍵＆玄室の鍵+1を入手！(📦+${chestGain})`,
+            '#c084fc',
+          );
+          showLootBanner('🗝️ 玄室の鍵を入手！階段の封印も解かれた！', '#c084fc', false);
+        } else {
+          callbacksRef.current.onAddLog(
+            `🔑 ${enemy.name}を撃破！階層の鍵を入手！(📦+${chestGain})`,
             '#fbbf24',
           );
-        } else {
-          callbacksRef.current.onAddLog('🔑 階層の鍵を入手！階段の封印が解かれた！', '#fbbf24');
+          showLootBanner('🔑 階層の鍵を入手！階段の封印が解かれた！', '#fbbf24', false);
         }
-        showLootBanner('🔑 階層の鍵を入手！階段の封印が解かれた！', '#fbbf24', false);
       }
 
       // 撃破時：他にも隣接している敵がいれば交戦対象を引き継ぐ
@@ -1279,7 +1290,7 @@ export function DungeonViewport({
       h.y = h.cy + 0.5;
       h.angle = snapCardinalAngle(h.angle);
 
-      const speedScale = sim.speed === 1 ? 1.0 : sim.speed === 2 ? 1.85 : 3.1;
+      const speedScale = getTurnSpeedScale(sim.speed);
       const activeBuff = getActiveFairyBuff(st.fairy);
       const exploreMult =
         activeBuff?.kind === 'explore'
@@ -2656,7 +2667,7 @@ export function DungeonViewport({
               title={
                 hudSnapshot.sanctumKeys >= 1
                   ? `${sanctumTarget}Fの玄室へ入場します（🗝️玄室の鍵を1本消費・即大ボス戦）`
-                  : '玄室の鍵が不足しています（10層ごとの中ボス撃破で入手）'
+                  : '玄室の鍵が不足しています（各階の鍵持ちボス撃破時に確率で入手）'
               }
               className={`rounded-md border px-2.5 py-1 text-[11px] font-extrabold shadow-lg transition ${
                 hudSnapshot.sanctumKeys >= 1
@@ -2670,7 +2681,7 @@ export function DungeonViewport({
             </button>
             {hudSnapshot.sanctumKeys < 1 && (
               <span className="rounded bg-slate-950/80 px-1.5 py-0.5 text-[10px] text-amber-200/90">
-                10層毎の中ボス再戦で🗝️鍵を入手
+                各階の鍵持ちボス周回で🗝️鍵を入手
               </span>
             )}
           </div>
