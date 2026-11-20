@@ -93,6 +93,80 @@ export const SUB_MAP: Record<SubStatKey, SubStatDef> = {
   bossDmg: SUB_POOL[5],
 };
 
+export const PERSONAL_SLOTS: SlotKey[] = ['weapon', 'armor'];
+export const SHARED_ARTIFACT_SLOTS: SlotKey[] = ['ring', 'necklace', 'gauntlets', 'boots'];
+
+export interface UniqueAffixDef {
+  key: 'vampiric' | 'first_strike' | 'cleave' | 'double_hit' | 'thorns' | 'treasure';
+  icon: string;
+  label: string;
+  desc: (val: number) => string;
+  min: number;
+  max: number;
+  slots: SlotKey[];
+}
+
+export const UNIQUE_AFFIX_POOL: UniqueAffixDef[] = [
+  {
+    key: 'vampiric',
+    icon: '🩸',
+    label: '吸血の刻印',
+    desc: (v) => `与ダメージの ${v}% 分 HP吸収`,
+    min: 4,
+    max: 12,
+    slots: ['weapon', 'ring', 'gauntlets'],
+  },
+  {
+    key: 'first_strike',
+    icon: '⚡',
+    label: '先制必殺',
+    desc: (v) => `HP満タンの敵へ与ダメ +${v}%`,
+    min: 18,
+    max: 45,
+    slots: ['weapon', 'necklace', 'boots'],
+  },
+  {
+    key: 'cleave',
+    icon: '🌪️',
+    label: '範囲波及',
+    desc: (v) => `他の同室/隣接敵へ ${v}% 波及ダメ`,
+    min: 20,
+    max: 50,
+    slots: ['weapon', 'gauntlets', 'boots'],
+  },
+  {
+    key: 'double_hit',
+    icon: '⚔️',
+    label: '連撃の極意',
+    desc: (v) => `${v}% で追加追撃（60%ダメ）`,
+    min: 14,
+    max: 34,
+    slots: ['weapon', 'ring', 'necklace'],
+  },
+  {
+    key: 'thorns',
+    icon: '🛡️',
+    label: '棘の反撃',
+    desc: (v) => `被弾時、攻撃力の ${v}% で反撃`,
+    min: 30,
+    max: 75,
+    slots: ['armor', 'gauntlets', 'boots'],
+  },
+  {
+    key: 'treasure',
+    icon: '💎',
+    label: '強運の加護',
+    desc: (v) => `強化石獲得 +${v}%（パーティ効果）`,
+    min: 10,
+    max: 25,
+    slots: ['armor', 'ring', 'necklace', 'boots'],
+  },
+];
+
+export const UNIQUE_AFFIX_MAP = Object.fromEntries(
+  UNIQUE_AFFIX_POOL.map((d) => [d.key, d]),
+) as Record<UniqueAffixDef['key'], UniqueAffixDef>;
+
 export const PREFIXES: string[][] = [
   ['古びた', '鉄の', '旅人の', '見習いの', '標準の'],
   ['熟練の', '鋭利な', '蒼き', '鋼の', '魔導の'],

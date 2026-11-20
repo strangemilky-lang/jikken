@@ -22,7 +22,42 @@ export type SortMode = 'newest' | 'rarity' | 'stage' | 'level';
 
 export type ItemLocation = 'bag' | 'stash';
 
-export type WindowKey = 'equipped' | 'bag' | 'stash';
+export type WindowKey = 'party' | 'equipped' | 'bag' | 'stash';
+
+export type JobId = 'warrior' | 'mage' | 'cleric' | 'ranger' | 'assassin';
+
+export type UniqueAffixKey =
+  | 'vampiric'
+  | 'first_strike'
+  | 'cleave'
+  | 'double_hit'
+  | 'thorns'
+  | 'treasure';
+
+export interface UniqueAffix {
+  key: UniqueAffixKey;
+  val: number;
+}
+
+export interface PartyMemberEquipment {
+  weapon: Item;
+  armor: Item;
+}
+
+export interface PartyMemberState {
+  id: JobId;
+  unlocked: boolean;
+  level: number;
+  exp: number;
+  unspentSp: number;
+  skills: Record<string, number>;
+  equipment: PartyMemberEquipment;
+}
+
+export interface PartyState {
+  activeIds: [JobId, JobId, JobId];
+  roster: Record<JobId, PartyMemberState>;
+}
 
 export interface DragItemPayload {
   itemId: string;
@@ -52,6 +87,9 @@ export interface Item {
     base: number;
   };
   subStats: SubStat[];
+  uniqueAffix?: UniqueAffix | null;
+  reforgedSubIdx?: number | null;
+  reforgeCount?: number;
 }
 
 export type EquippedSet = Record<SlotKey, Item>;
@@ -88,6 +126,7 @@ export interface GameState {
   maxDmg: number;
   soundOn: boolean;
   equipped: EquippedSet;
+  party: PartyState;
   inventory: Item[];
   stash: Item[];
   fairy: FairyState;

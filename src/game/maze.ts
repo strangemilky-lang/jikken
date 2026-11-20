@@ -132,7 +132,7 @@ export function shouldExitRestMode(hp: number, maxHp: number): boolean {
  * 鍵入手済みの探索優先ルール：
  * - 鍵あり & 階段発見済み -> 即座に階段へ向かう
  * - 鍵なし または 階段未発見 -> アイテム回収・未訪問部屋・未踏破通路を探索
- * - 全探索しても鍵未入手なら生存中の鍵持ちモンスターを探す
+ * - 全探索(100%)しても鍵未入手なら全部の部屋を一周巡回して鍵持ちを探す
  */
 export function pickExplorationTarget(
   grid: number[][],
@@ -147,8 +147,18 @@ export function pickExplorationTarget(
   roomGrid?: number[][],
   rooms?: DungeonRoom[],
   visitedRooms?: Set<number>,
-  options?: { hasFloorKey?: boolean; enemies?: FloorEnemy[] },
-): { target: MazeCell; reason: 'stairs' | 'event' | 'explore' } {
+  options?: {
+    hasFloorKey?: boolean;
+    enemies?: FloorEnemy[];
+    patrolVisitedRooms?: Set<number>;
+    patrolTargetRoomId?: number | null;
+  },
+): {
+  target: MazeCell;
+  reason: 'stairs' | 'event' | 'explore' | 'patrol';
+  patrolRoomId?: number;
+  patrolCycleReset?: boolean;
+} {
   const hasFloorKey = options?.hasFloorKey ?? true;
   if (hasFloorKey && explored.has(crawlKey(stairs.x, stairs.y))) {
     return { target: { x: stairs.x, y: stairs.y }, reason: 'stairs' };
@@ -158,6 +168,7 @@ export function pickExplorationTarget(
   const cols = grid[0]?.length ?? CRAWL_COLS;
   const { dist, prev } = bfsGrid(grid, cx, cy, cols, rows);
   const heroRoomId = roomGrid?.[cy]?.[cx] ?? -1;
+  const hasRooms = Boolean(rooms && rooms.length > 0);
 
   // 1. 現在いる部屋、または探索済みの未回収お宝があれば優先回収（近い順）
   const activeEvents = events.filter((ev) => !ev.triggered);
@@ -178,10 +189,14 @@ export function pickExplorationTarget(
   }
 
   // 2. 未訪問の部屋があれば最も近い未訪問部屋へ向かう
-  if (rooms && rooms.length > 0 && visitedRooms) {
+  if (hasRooms && rooms && visitedRooms) {
     const unvisitedRooms = rooms
       .filter((r) => !visitedRooms.has(r.id))
-      .sort((a, b) => (dist.get(crawlKey(a.cx, a.cy)) ?? 999) - (dist.get(crawlKey(b.cx, b.cy)) ?? 999));
+      .sort(
+        (a, b) =>
+          (dist.get(crawlKey(a.cx, a.cy)) ?? 999) - (dist.get(crawlKey(b.cx, b.cy)) ?? 999) ||
+          a.id - b.id,
+      );
     if (unvisitedRooms.length > 0) {
       const nextRoom = unvisitedRooms[0];
       return { target: { x: nextRoom.cx, y: nextRoom.cy }, reason: 'explore' };
@@ -227,8 +242,9 @@ export function pickExplorationTarget(
     if (d < 1) continue;
     const [x, y] = k.split(',').map(Number);
     if (x === stairs.x && y === stairs.y) continue;
-    const isUnstepped = !stepped.has(k);
     const isUnexplored = !explored.has(k);
+    // 部屋ありダンジョンでは探索済み部屋の未踏マスを潰す必要はない（階段周囲グルグル防止）
+    const isUnstepped = !hasRooms && !stepped.has(k);
     if (!isUnstepped && !isUnexplored) continue;
 
     const fs = getFirstStep(x, y);
@@ -247,6 +263,37 @@ export function pickExplorationTarget(
   }
 
   if (candidates.length === 0) {
+    // 探索100%で鍵未入手：部屋ありダンジョンなら全部の部屋を一周巡回して鍵持ちを探す
+    if (!hasFloorKey && hasRooms && rooms && rooms.length >= 2) {
+      const checked = new Set<number>(options?.patrolVisitedRooms ?? []);
+      if (heroRoomId >= 0) checked.add(heroRoomId);
+      let remaining = rooms.filter((r) => !checked.has(r.id));
+      let patrolCycleReset = false;
+      if (remaining.length === 0) {
+        patrolCycleReset = true;
+        remaining = rooms.filter((r) => r.id !== heroRoomId);
+      }
+      if (remaining.length > 0) {
+        const lockedTarget =
+          options?.patrolTargetRoomId != null
+            ? remaining.find((r) => r.id === options.patrolTargetRoomId)
+            : undefined;
+        const nextRoom =
+          lockedTarget ??
+          [...remaining].sort((a, b) => {
+            const da = dist.get(crawlKey(a.cx, a.cy)) ?? 999;
+            const db = dist.get(crawlKey(b.cx, b.cy)) ?? 999;
+            return da - db || a.id - b.id;
+          })[0];
+        return {
+          target: { x: nextRoom.cx, y: nextRoom.cy },
+          reason: 'patrol',
+          patrolRoomId: nextRoom.id,
+          patrolCycleReset,
+        };
+      }
+    }
+
     if (!hasFloorKey && options?.enemies) {
       const keyKeeper = options.enemies.find((e) => e.enemy.hp > 0 && (e.enemy.isKeyKeeper || e.enemy.isBoss));
       if (keyKeeper) {
@@ -254,6 +301,15 @@ export function pickExplorationTarget(
       }
     }
     return { target: { x: stairs.x, y: stairs.y }, reason: hasFloorKey ? 'stairs' : 'explore' };
+  }
+
+  if (hasRooms) {
+    // 未探索の通路マスが残っている場合は最も近い未探索マスへブレずに直行
+    const sortedUnexp = [...candidates].sort(
+      (a, b) => a.d - b.d || (b.isForward ? 1 : 0) - (a.isForward ? 1 : 0) || a.y - b.y || a.x - b.x,
+    );
+    const chosen = sortedUnexp[0];
+    return { target: { x: chosen.x, y: chosen.y }, reason: 'explore' };
   }
 
   const forwardPool = candidates.filter((c) => c.isForward);
@@ -745,6 +801,10 @@ export function stepEnemiesTowardHero(
       e.x = nextStep.x;
       e.y = nextStep.y;
       e.roomId = roomGrid[nextStep.y]?.[nextStep.x] ?? -1;
+      const dAfter = Math.abs(e.x - heroCell.x) + Math.abs(e.y - heroCell.y);
+      if ((heroRoomId >= 0 && heroRoomId === e.roomId) || dAfter <= 1) {
+        e.awakened = true;
+      }
     }
   }
 }

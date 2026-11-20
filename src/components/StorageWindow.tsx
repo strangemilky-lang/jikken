@@ -1,11 +1,28 @@
 import { useState, type DragEvent } from 'react';
-import { MAX_BAG_SIZE, MAX_STASH_SIZE, RARITIES, SLOT_ORDER, SLOTS, SUB_MAP } from '../game/constants';
-import { filterAndSortStorageItems, fmt, formatStatDiff, getMainStatVal } from '../game/items';
+import {
+  MAX_BAG_SIZE,
+  MAX_STASH_SIZE,
+  RARITIES,
+  SLOT_ORDER,
+  SLOTS,
+  SUB_MAP,
+  UNIQUE_AFFIX_MAP,
+} from '../game/constants';
+import {
+  filterAndSortStorageItems,
+  fmt,
+  formatStatDiff,
+  getItemRollQuality,
+  getMainStatVal,
+} from '../game/items';
+import { getMemberEquippedSet, JOB_DEFS, JOB_ORDER } from '../game/party';
 import type {
   DragItemPayload,
   EquippedSet,
   Item,
   ItemLocation,
+  JobId,
+  PartyState,
   SalvageBulkMode,
   SlotKey,
   SortMode,
@@ -23,6 +40,8 @@ interface StorageWindowProps {
   windowSize: WindowSize;
   stones: number;
   equipped: EquippedSet;
+  party: PartyState;
+  selectedMemberId: JobId;
   items: Item[];
   otherCount: number;
   filterSlot: 'all' | SlotKey;
@@ -37,6 +56,7 @@ interface StorageWindowProps {
   onFocus: () => void;
   onMovePosition: (pos: WindowPos) => void;
   onResizeWindow: (size: WindowSize) => void;
+  onSelectMember: (id: JobId) => void;
   onChangeFilter: (slot: 'all' | SlotKey) => void;
   onChangeSort: (mode: SortMode) => void;
   onSelectItem: (id: string) => void;
@@ -44,6 +64,7 @@ interface StorageWindowProps {
   onEquipItem: (id: string) => void;
   onMoveItem: (id: string) => void;
   onUpgradeItem: (id: string) => void;
+  onReforgeSubstat: (id: string, subIdx: number) => void;
   onToggleLock: (id: string) => void;
   onSalvageSingle: (id: string) => void;
   onSalvageBulk?: (mode: SalvageBulkMode) => void;
@@ -63,6 +84,8 @@ export function StorageWindow({
   windowSize,
   stones,
   equipped,
+  party,
+  selectedMemberId,
   items,
   otherCount,
   filterSlot,
@@ -77,6 +100,7 @@ export function StorageWindow({
   onFocus,
   onMovePosition,
   onResizeWindow,
+  onSelectMember,
   onChangeFilter,
   onChangeSort,
   onSelectItem,
@@ -84,6 +108,7 @@ export function StorageWindow({
   onEquipItem,
   onMoveItem,
   onUpgradeItem,
+  onReforgeSubstat,
   onToggleLock,
   onSalvageSingle,
   onSalvageBulk,
@@ -101,6 +126,11 @@ export function StorageWindow({
   const otherMax = isBag ? MAX_STASH_SIZE : MAX_BAG_SIZE;
   const isOtherFull = otherCount >= otherMax;
   const canAcceptDrop = Boolean(draggedItem && draggedItem.source !== location && items.length < maxCapacity);
+
+  const targetMember = party.roster[selectedMemberId] ?? party.roster[party.activeIds[0]];
+  const targetMemberDef = JOB_DEFS[targetMember.id];
+  const unlockedMembers = JOB_ORDER.map((id) => party.roster[id]).filter((m) => m.unlocked);
+  const effectiveEquipped = getMemberEquippedSet(targetMember, equipped);
 
   const filteredItems = filterAndSortStorageItems(items, filterSlot, sortMode);
 
@@ -155,7 +185,7 @@ export function StorageWindow({
             💎 {fmt(stones)}
           </span>
           <span className="hidden text-[11px] font-medium text-slate-400 lg:inline">
-            {isBag ? 'ドラッグで装備／倉庫へ移動' : '一括分解対象外・長期保管'}
+            装備先: {targetMemberDef.icon} {targetMemberDef.name}
           </span>
         </>
       }
@@ -189,13 +219,38 @@ export function StorageWindow({
       }
     >
       {/* Body: Desktop 2-Pane / Mobile Master-Detail */}
-      <div className="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_330px] overflow-hidden max-lg:grid-cols-[minmax(0,1fr)_300px] max-md:flex max-md:flex-col">
-        {/* Left / Master Pane: Filter, Sort, Draggable List, Bulk Salvage or Stash Note */}
+      <div className="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_335px] overflow-hidden max-lg:grid-cols-[minmax(0,1fr)_305px] max-md:flex max-md:flex-col">
+        {/* Left / Master Pane: Member Target, Filter, Sort, Draggable List, Bulk Salvage or Stash Note */}
         <div
           className={`flex min-h-0 flex-1 flex-col gap-2 border-r border-slate-400/20 p-2.5 max-md:border-r-0 ${
             showingMobileDetail ? 'max-md:hidden' : ''
           }`}
         >
+          {/* Equip/Compare Target Bar */}
+          <div className="flex flex-wrap items-center justify-between gap-1.5 rounded-md border border-slate-400/20 bg-slate-900/60 px-2 py-1">
+            <span className="text-[10px] font-bold text-slate-400">武器・防具の装備先:</span>
+            <div className="flex flex-wrap gap-1">
+              {unlockedMembers.map((m) => {
+                const d = JOB_DEFS[m.id];
+                const isTarget = m.id === targetMember.id;
+                return (
+                  <button
+                    key={m.id}
+                    type="button"
+                    onClick={() => onSelectMember(m.id)}
+                    className={`rounded border px-1.5 py-0.5 text-[10px] font-bold transition ${
+                      isTarget
+                        ? 'border-sky-300 bg-sky-500/30 text-white'
+                        : 'border-slate-500/35 bg-slate-800 text-slate-300 hover:bg-slate-700'
+                    }`}
+                  >
+                    {d.icon} {d.name}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
           {/* Filters & Sort */}
           <div className="flex flex-wrap items-center justify-between gap-1.5">
             <div className="flex flex-wrap gap-1" role="tablist" aria-label="部位フィルタ">
@@ -275,8 +330,10 @@ export function StorageWindow({
                 const sInfo = SLOTS[it.slot];
                 const selected = selectedItemId === it.id;
                 const mainVal = getMainStatVal(it);
-                const eqMainVal = getMainStatVal(equipped[it.slot]);
+                const eqMainVal = getMainStatVal(effectiveEquipped[it.slot]);
                 const diffInfo = formatStatDiff(mainVal - eqMainVal, sInfo.unit);
+                const quality = getItemRollQuality(it);
+                const affix = it.uniqueAffix ? UNIQUE_AFFIX_MAP[it.uniqueAffix.key] : null;
                 const isBeingDragged =
                   draggedItem?.itemId === it.id && draggedItem.source === location;
 
@@ -329,6 +386,25 @@ export function StorageWindow({
                           </span>
                           {it.level > 0 && (
                             <span className="shrink-0 text-[11px] text-amber-400">+{it.level}</span>
+                          )}
+                          {(quality.grade === 'S' || quality.grade === 'A') && (
+                            <span
+                              className={`shrink-0 rounded px-1 text-[9px] font-black ${
+                                quality.grade === 'S'
+                                  ? 'bg-amber-400/25 text-amber-200'
+                                  : 'bg-sky-500/25 text-sky-200'
+                              }`}
+                            >
+                              {quality.grade}
+                            </span>
+                          )}
+                          {affix && (
+                            <span
+                              title={affix.desc(it.uniqueAffix!.val)}
+                              className="shrink-0 rounded bg-fuchsia-500/25 px-1 text-[9px] font-bold text-fuchsia-200"
+                            >
+                              {affix.icon}
+                            </span>
                           )}
                           {it.locked && (
                             <span className="shrink-0" title="ロック中">
@@ -431,7 +507,7 @@ export function StorageWindow({
                   type="button"
                   disabled={isRollingUpgrade}
                   onClick={() => onSalvageBulk('weaker')}
-                  title="装備中より基礎値が低くレア度も以下の武器・防具を分解（アクセは保護）"
+                  title="出撃パーティ全員の装備より弱い型落ち武器・防具を分解（アクセは保護）"
                   className="whitespace-nowrap rounded border border-red-400/45 bg-red-900/35 px-1.5 py-1 text-[11px] font-semibold text-red-200 transition hover:bg-red-700/50 disabled:opacity-40"
                 >
                   型落ち武器防具
@@ -466,13 +542,13 @@ export function StorageWindow({
           </div>
 
           <div className="hidden text-[11px] font-bold text-slate-400 md:block">
-            詳細・比較・強化
+            詳細・比較・強化・再鍛造
           </div>
 
           <ItemDetailPanel
             item={selectedItem}
             location={location}
-            equippedInSlot={selectedItem ? equipped[selectedItem.slot] : null}
+            equippedInSlot={selectedItem ? effectiveEquipped[selectedItem.slot] : null}
             stones={stones}
             isRollingUpgrade={isRollingUpgrade}
             rouletteActiveIdx={rouletteActiveIdx}
@@ -482,16 +558,21 @@ export function StorageWindow({
               filteredItems.length === 0 && filterSlot !== 'all'
                 ? `「${SLOTS[filterSlot].label}」タブに該当する装備はありません。`
                 : isBag
-                  ? 'バッグから装備を選択すると、現在の装備との比較・強化・倉庫への移動ができます。'
-                  : '倉庫から装備を選択すると、現在の装備との比較や強化ができます。'
+                  ? 'バッグから装備を選択すると、比較・強化・再鍛造・倉庫への移動ができます。'
+                  : '倉庫から装備を選択すると、比較・強化・再鍛造ができます。'
             }
             onEquipItem={onEquipItem}
             onMoveLocation={onMoveItem}
             moveLocationDisabled={isOtherFull}
             onUpgradeItem={onUpgradeItem}
+            onReforgeSubstat={onReforgeSubstat}
             onToggleLock={onToggleLock}
             onSalvageSingle={onSalvageSingle}
             salvageBonusPct={salvageBonusPct}
+            targetMemberLabel={`${targetMemberDef.icon} ${targetMemberDef.name}`}
+            selectableMembers={unlockedMembers}
+            selectedMemberId={targetMember.id}
+            onSelectMember={onSelectMember}
           />
         </div>
       </div>

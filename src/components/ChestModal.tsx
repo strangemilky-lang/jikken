@@ -1,4 +1,4 @@
-import { CHEST_BATCH_MAX, RARITIES, SLOTS, SUB_MAP } from '../game/constants';
+import { CHEST_BATCH_MAX, PERSONAL_SLOTS, RARITIES, SLOTS, SUB_MAP, UNIQUE_AFFIX_MAP } from '../game/constants';
 import { fmt, getMainStatVal } from '../game/items';
 import type { GachaPullResult } from '../game/types';
 import { PixelSpriteIcon } from './PixelSpriteIcon';
@@ -9,6 +9,7 @@ interface ChestModalProps {
   chests: number;
   mythicChests: number;
   maxStage: number;
+  targetMemberName?: string;
   autoSalvageChecked: boolean;
   isOpening: boolean;
   results: GachaPullResult[];
@@ -23,6 +24,7 @@ export function ChestModal({
   chests,
   mythicChests,
   maxStage,
+  targetMemberName,
   autoSalvageChecked,
   isOpening,
   results,
@@ -180,6 +182,8 @@ export function ChestModal({
 
               const isHighRarity = it.rarity >= 3;
               const isMythic = it.rarity === 4;
+              const affix = it.uniqueAffix ? UNIQUE_AFFIX_MAP[it.uniqueAffix.key] : null;
+              const isPersonal = PERSONAL_SLOTS.includes(it.slot);
 
               return (
                 <div
@@ -231,8 +235,15 @@ export function ChestModal({
                   <div className="relative z-10 truncate text-xs font-extrabold">
                     {it.icon} <RarityName item={it} />
                   </div>
-                  <div className="relative z-10 text-[11px] text-slate-200">
-                    {sInfo.mainLabel} +{fmt(getMainStatVal(it))}{sInfo.unit}
+                  <div className="relative z-10 flex items-center justify-between gap-1 text-[11px] text-slate-200">
+                    <span>
+                      {sInfo.mainLabel} +{fmt(getMainStatVal(it))}{sInfo.unit}
+                    </span>
+                    {affix && (
+                      <span className="shrink-0 rounded bg-fuchsia-500/25 px-1 text-[9px] font-bold text-fuchsia-200">
+                        {affix.icon}{affix.label}
+                      </span>
+                    )}
                   </div>
                   <div className="relative z-10 truncate text-[10px] text-slate-400">
                     {it.subStats.map((s) => SUB_MAP[s.key].label).join(' / ')}
@@ -252,7 +263,11 @@ export function ChestModal({
                         onClick={() => onEquipFromResult(res.id, it.id)}
                         className="rounded border border-blue-400/70 bg-blue-600 px-2 py-0.5 text-[11px] font-semibold text-white transition hover:bg-blue-500 disabled:opacity-45"
                       >
-                        {res.equippedFromModal ? '装備済' : '装備'}
+                        {res.equippedFromModal
+                          ? '装備済'
+                          : isPersonal && targetMemberName
+                            ? `${targetMemberName}へ`
+                            : '装備'}
                       </button>
                     </div>
                   )}

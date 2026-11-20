@@ -11,6 +11,8 @@ import {
   SLOTS,
   SUB_MAP,
   SUB_POOL,
+  UNIQUE_AFFIX_MAP,
+  UNIQUE_AFFIX_POOL,
 } from './constants';
 import type {
   EquippedSet,
@@ -23,6 +25,7 @@ import type {
   SortMode,
   SubStat,
   SubStatKey,
+  UniqueAffix,
 } from './types';
 
 export const uid = () => 'itm_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
@@ -171,6 +174,23 @@ export function generateItem(opts: GenerateItemOptions): Item {
     };
   });
 
+  let uniqueAffix: UniqueAffix | null = null;
+  if (!isStarter) {
+    const affixChance = rarity === 4 ? 1.0 : rarity === 3 ? 0.7 : rarity === 2 ? 0.3 : 0;
+    if (affixChance > 0 && Math.random() < affixChance) {
+      const slotDefs = UNIQUE_AFFIX_POOL.filter((d) => d.slots.includes(slot));
+      const pool = slotDefs.length > 0 ? slotDefs : UNIQUE_AFFIX_POOL;
+      const pickedDef = pool[Math.floor(Math.random() * pool.length)];
+      const tierRatio = ROLL_TIER_RATIOS[Math.floor(Math.random() * ROLL_TIER_RATIOS.length)];
+      const rarScale = rarity === 4 ? 1.08 : rarity === 3 ? 1.0 : 0.85;
+      const val = Math.max(
+        pickedDef.min,
+        Math.round((pickedDef.min + (pickedDef.max - pickedDef.min) * tierRatio) * rarScale),
+      );
+      uniqueAffix = { key: pickedDef.key, val };
+    }
+  }
+
   return {
     id: uid(),
     slot,
@@ -187,7 +207,78 @@ export function generateItem(opts: GenerateItemOptions): Item {
       base: mainBase,
     },
     subStats,
+    uniqueAffix,
+    reforgedSubIdx: null,
+    reforgeCount: 0,
   };
+}
+
+export function getItemRollQuality(item: Item): { pct: number; grade: 'S' | 'A' | 'B' | 'C' } {
+  const rInfo = RARITIES[item.rarity];
+  if (!item.subStats.length) return { pct: 70, grade: 'B' };
+  let sumRatio = 0;
+  for (const sub of item.subStats) {
+    const def = SUB_MAP[sub.key];
+    if (!def) continue;
+    const expectedMin = def.min * rInfo.subMult * (1 + sub.boosts * 0.63);
+    const expectedMax = def.max * rInfo.subMult * (1 + sub.boosts * 0.9);
+    const norm = expectedMax > expectedMin ? (sub.val - expectedMin) / (expectedMax - expectedMin) : 0.7;
+    sumRatio += clamp(norm, 0, 1);
+  }
+  let pct = Math.round(62 + (sumRatio / item.subStats.length) * 34);
+  if (item.uniqueAffix) {
+    const def = UNIQUE_AFFIX_MAP[item.uniqueAffix.key];
+    if (def) {
+      const aNorm = clamp((item.uniqueAffix.val - def.min) / Math.max(1, def.max - def.min), 0, 1);
+      pct = Math.min(100, pct + Math.round(2 + aNorm * 4));
+    }
+  }
+  pct = clamp(pct, 50, 100);
+  const grade: 'S' | 'A' | 'B' | 'C' = pct >= 90 ? 'S' : pct >= 80 ? 'A' : pct >= 70 ? 'B' : 'C';
+  return { pct, grade };
+}
+
+export function getReforgeCost(item: Item): number {
+  const count = item.reforgeCount ?? 0;
+  const base = SLOTS[item.slot].isFixedCap
+    ? 14 + item.rarity * 12
+    : 8 + Math.round(item.stage * 1.8) + item.rarity * 10;
+  return Math.max(8, Math.round(base * (1 + count * 0.45)));
+}
+
+export function reforgeItemSubstat(
+  item: Item,
+  subIdx: number,
+  rng: () => number = Math.random,
+): { newSub: SubStat; label: string; unit: string } | null {
+  if (subIdx < 0 || subIdx >= item.subStats.length) return null;
+  if (item.reforgedSubIdx !== null && item.reforgedSubIdx !== undefined && item.reforgedSubIdx !== subIdx) {
+    return null;
+  }
+  const rInfo = RARITIES[item.rarity];
+  const current = item.subStats[subIdx];
+  const otherKeys = new Set<SubStatKey>(
+    item.subStats.filter((_, i) => i !== subIdx).map((s) => s.key),
+  );
+  const candidates = SUB_POOL.filter((d) => !otherKeys.has(d.key) && d.key !== current.key);
+  const pool = candidates.length > 0 ? candidates : SUB_POOL.filter((d) => !otherKeys.has(d.key));
+  const pickedDef = pool[Math.floor(rng() * pool.length)] ?? SUB_POOL[0];
+  const tierRatio = ROLL_TIER_RATIOS[Math.floor(rng() * ROLL_TIER_RATIOS.length)];
+  const baseRoll = (pickedDef.min + (pickedDef.max - pickedDef.min) * tierRatio) * rInfo.subMult;
+  let totalVal = baseRoll;
+  for (let b = 0; b < (current.boosts || 0); b++) {
+    const bRatio = ROLL_TIER_RATIOS[Math.floor(rng() * ROLL_TIER_RATIOS.length)];
+    totalVal += (pickedDef.min + (pickedDef.max - pickedDef.min) * bRatio) * rInfo.subMult * 0.9;
+  }
+  const newSub: SubStat = {
+    key: pickedDef.key,
+    val: +totalVal.toFixed(1),
+    boosts: current.boosts || 0,
+  };
+  item.subStats[subIdx] = newSub;
+  item.reforgedSubIdx = subIdx;
+  item.reforgeCount = (item.reforgeCount ?? 0) + 1;
+  return { newSub, label: pickedDef.label, unit: pickedDef.unit };
 }
 
 export function getMaxEquipLevel(item: Pick<Item, 'rarity'> | null | undefined): number {

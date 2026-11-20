@@ -30,14 +30,37 @@ import {
   formatUpgradeMessage,
   generateItem,
   getEquipTierStage,
+  getItemRollQuality,
   getMainStatVal,
   getMaxEquipLevel,
   getNextSelectedStorageId,
+  getReforgeCost,
   getSalvageValue,
   getUpgradeCost,
   partitionBulkSalvage,
+  reforgeItemSubstat,
   rollSubstatMilestone,
 } from './items';
+import {
+  allocateSkillPoint,
+  calcEnemyExpReward,
+  calcPartyMemberStats,
+  canRecruitCharacter,
+  expToNextLevel,
+  findBestAutoEquipCandidate,
+  getActiveMembers,
+  getPartyBonuses,
+  getSpentSkillPoints,
+  grantPartyExp,
+  JOB_DEFS,
+  JOB_ORDER,
+  MAX_SKILL_LEVEL,
+  pickEnemyTargetMember,
+  recruitCharacter,
+  resetMemberSkills,
+  setActivePartySlot,
+  syncLeaderEquipped,
+} from './party';
 import {
   bfsPath,
   cardinalAngleFromDelta,
@@ -1316,6 +1339,353 @@ test('Sanctum key drops probabilistically from any regular Key-Keeper boss at re
   assert.equal(rollSanctumKeyDrop(true, () => 0.5), false);
   assert.equal(rollSanctumKeyDrop(false, () => 0.0), false);
 });
+
+test('At 100% exploration without floor key, pickExplorationTarget patrols every room instead of circling stairs', () => {
+  let seed = 42;
+  const seededRng = () => {
+    seed = (seed * 1664525 + 1013904223) >>> 0;
+    return seed / 0x100000000;
+  };
+
+  // 1) Pure patrol lap test: hero in stairs room with unstepped corner tiles around stairs
+  const floor = generateMaze(25, 25, { stage: 3, monsterHouseChance: 0, rng: seededRng });
+  const explored = new Set<string>(floor.depth.keys());
+  const visitedRooms = new Set<number>(floor.rooms.map((r) => r.id));
+  const stairsRoomId = floor.roomGrid[floor.stairs.y][floor.stairs.x];
+  // Only hero's current tile stepped — plenty of unstepped tiles remain around the stairs!
+  let hx = floor.stairs.x;
+  let hy = floor.stairs.y;
+  const stepped = new Set<string>([crawlKey(hx, hy)]);
+
+  const patrolVisited = new Set<number>([stairsRoomId]);
+  let patrolTargetRoomId: number | null = null;
+  const visitedOrder: number[] = [stairsRoomId];
+  let sawCycleReset = false;
+
+  for (let step = 0; step < 300; step++) {
+    const picked = pickExplorationTarget(
+      floor.grid,
+      hx,
+      hy,
+      0,
+      explored,
+      stepped,
+      floor.stairs,
+      [],
+      seededRng,
+      floor.roomGrid,
+      floor.rooms,
+      visitedRooms,
+      {
+        hasFloorKey: false,
+        enemies: [],
+        patrolVisitedRooms: patrolVisited,
+        patrolTargetRoomId,
+      },
+    );
+    assert.equal(picked.reason, 'patrol', '100% explored room floor without key must enter patrol mode');
+    assert.ok(picked.patrolRoomId !== undefined);
+    if (picked.patrolCycleReset) {
+      sawCycleReset = true;
+      break;
+    }
+    if (patrolTargetRoomId === null) {
+      assert.notEqual(picked.patrolRoomId, stairsRoomId, 'Must leave stairs room instead of circling stairs');
+    }
+    patrolTargetRoomId = picked.patrolRoomId;
+
+    const path = bfsPath(floor.grid, hx, hy, picked.target.x, picked.target.y);
+    assert.ok(path && path.length >= 2, 'Patrol room target must be reachable');
+    hx = path[1].x;
+    hy = path[1].y;
+    stepped.add(crawlKey(hx, hy));
+
+    const rId = floor.roomGrid[hy][hx];
+    if (rId >= 0) {
+      if (!patrolVisited.has(rId)) {
+        visitedOrder.push(rId);
+      }
+      patrolVisited.add(rId);
+      if (patrolTargetRoomId === rId) {
+        patrolTargetRoomId = null;
+      }
+    }
+  }
+
+  assert.equal(
+    patrolVisited.size,
+    floor.rooms.length,
+    `Patrol lap must visit all ${floor.rooms.length} rooms, visited ${visitedOrder.join(',')}`,
+  );
+  assert.equal(sawCycleReset, true, 'Patrol must cleanly reset for another lap after visiting every room');
+
+  // 2) Multi-floor simulation: roaming Key-Keeper is reliably encountered via room patrol
+  for (let trial = 0; trial < 25; trial++) {
+    const m = generateMaze(25, 25, { stage: 4 + trial, monsterHouseChance: 0, rng: seededRng });
+    const allExplored = new Set<string>(m.depth.keys());
+    const allVisited = new Set<number>(m.rooms.map((r) => r.id));
+    const stRoomId = m.roomGrid[m.stairs.y][m.stairs.x];
+    const otherRooms = m.rooms.filter((r) => r.id !== stRoomId);
+    const keeperRoom = otherRooms[Math.floor(seededRng() * otherRooms.length)];
+    const keeper = {
+      id: 'boss_keykeeper',
+      x: keeperRoom.cx,
+      y: keeperRoom.cy,
+      roomId: keeperRoom.id,
+      awakened: false,
+      prevCell: null,
+      atkTimer: 0,
+      shake: 0,
+      flashTimer: 0,
+      rareEscapeTimer: 6,
+      enemy: createEnemy(4 + trial, true, -100),
+    };
+
+    let px = m.stairs.x;
+    let py = m.stairs.y;
+    const pStepped = new Set<string>([crawlKey(px, py)]);
+    let pVisited = new Set<number>([stRoomId]);
+    let pTarget: number | null = null;
+    let foundKeeper = false;
+
+    for (let turn = 1; turn <= 260; turn++) {
+      const heroRoom = m.roomGrid[py][px];
+      if (
+        keeper.awakened ||
+        (heroRoom >= 0 && heroRoom === keeper.roomId) ||
+        Math.abs(px - keeper.x) + Math.abs(py - keeper.y) <= 1
+      ) {
+        foundKeeper = true;
+        break;
+      }
+
+      const picked = pickExplorationTarget(
+        m.grid,
+        px,
+        py,
+        0,
+        allExplored,
+        pStepped,
+        m.stairs,
+        [],
+        seededRng,
+        m.roomGrid,
+        m.rooms,
+        allVisited,
+        {
+          hasFloorKey: false,
+          enemies: [keeper],
+          patrolVisitedRooms: pVisited,
+          patrolTargetRoomId: pTarget,
+        },
+      );
+      if (picked.patrolCycleReset) {
+        pVisited = new Set<number>(heroRoom >= 0 ? [heroRoom] : []);
+      }
+      pTarget = picked.patrolRoomId ?? null;
+
+      const path = bfsPath(m.grid, px, py, picked.target.x, picked.target.y);
+      assert.ok(path && path.length >= 2);
+      px = path[1].x;
+      py = path[1].y;
+      pStepped.add(crawlKey(px, py));
+
+      const enteredRoom = m.roomGrid[py][px];
+      if (enteredRoom >= 0) {
+        pVisited.add(enteredRoom);
+        if (pTarget === enteredRoom) pTarget = null;
+      }
+
+      stepEnemiesTowardHero(m.grid, m.roomGrid, { x: px, y: py }, m.stairs, [keeper], turn, seededRng);
+    }
+
+    assert.equal(foundKeeper, true, `Trial ${trial}: room patrol must encounter roaming Key-Keeper`);
+  }
+});
+
+test('Party system initializes 3 active classic jobs, 5-character roster, EXP sharing, skill allocation, and free reset', () => {
+  const st = createDefaultState();
+  assert.deepEqual(st.party.activeIds, ['warrior', 'mage', 'cleric']);
+  assert.equal(JOB_ORDER.length, 5);
+  assert.equal(st.party.roster.warrior.unlocked, true);
+  assert.equal(st.party.roster.mage.unlocked, true);
+  assert.equal(st.party.roster.cleric.unlocked, true);
+  assert.equal(st.party.roster.ranger.unlocked, false);
+  assert.equal(st.party.roster.assassin.unlocked, false);
+  assert.equal(st.party.roster.warrior.unspentSp, 1);
+
+  // Allocate skill point and test free reset
+  const w = st.party.roster.warrior;
+  assert.equal(allocateSkillPoint(w, 'warrior_bash'), true);
+  assert.equal(w.skills.warrior_bash, 1);
+  assert.equal(w.unspentSp, 0);
+  assert.equal(allocateSkillPoint(w, 'warrior_bash'), false); // out of SP
+  assert.equal(getSpentSkillPoints(w), 1);
+
+  const refunded = resetMemberSkills(w);
+  assert.equal(refunded, 1);
+  assert.equal(w.skills.warrior_bash, 0);
+  assert.equal(w.unspentSp, 1);
+
+  // Max skill level cap (5)
+  w.unspentSp = 10;
+  for (let i = 0; i < MAX_SKILL_LEVEL; i++) {
+    assert.equal(allocateSkillPoint(w, 'warrior_bash'), true);
+  }
+  assert.equal(allocateSkillPoint(w, 'warrior_bash'), false);
+  assert.equal(w.skills.warrior_bash, MAX_SKILL_LEVEL);
+  assert.equal(resetMemberSkills(w), MAX_SKILL_LEVEL);
+
+  // EXP distribution: active gets 100%, unlocked bench gets 50%, locked gets 0%
+  st.party.roster.ranger.unlocked = true; // bench member
+  const lv1Req = expToNextLevel(1);
+  const levelUps = grantPartyExp(st.party, lv1Req);
+  assert.equal(st.party.roster.warrior.level, 2);
+  assert.equal(st.party.roster.mage.level, 2);
+  assert.equal(st.party.roster.cleric.level, 2);
+  assert.equal(st.party.roster.ranger.level, 1);
+  assert.equal(st.party.roster.ranger.exp, Math.floor(lv1Req * 0.5));
+  assert.equal(st.party.roster.assassin.exp, 0);
+  assert.equal(levelUps.length, 3);
+  assert.ok(calcEnemyExpReward(10, true, false) > calcEnemyExpReward(10, false, false));
+  assert.ok(calcEnemyExpReward(50, true, true) > calcEnemyExpReward(50, true, false));
+});
+
+test('Character recruitment (free at stage or early via stones), formation swapping, and syncLeaderEquipped', () => {
+  const st = createDefaultState();
+  st.party.roster.warrior.level = 4;
+  st.party.roster.mage.level = 4;
+  st.party.roster.cleric.level = 4;
+
+  // Stage 1 with 0 stones: cannot recruit Ranger
+  st.stones = 0;
+  assert.equal(canRecruitCharacter(st.party, 'ranger', 1, 0).canFree, false);
+  assert.equal(canRecruitCharacter(st.party, 'ranger', 1, 0).canPay, false);
+  assert.equal(recruitCharacter(st, 'ranger').ok, false);
+
+  // Early recruit Ranger with stones + level catch-up
+  st.stones = JOB_DEFS.ranger.recruitStoneCost;
+  const rPay = recruitCharacter(st, 'ranger');
+  assert.equal(rPay.ok, true);
+  assert.equal(rPay.paidStones, JOB_DEFS.ranger.recruitStoneCost);
+  assert.equal(st.stones, 0);
+  assert.equal(st.party.roster.ranger.unlocked, true);
+  assert.equal(st.party.roster.ranger.level, 4);
+  assert.equal(st.party.roster.ranger.unspentSp, 4); // 1 starter + 3 catch-up
+
+  // Free recruit Assassin at stage >= 8
+  st.maxStage = 8;
+  const rFree = recruitCharacter(st, 'assassin');
+  assert.equal(rFree.ok, true);
+  assert.equal(rFree.paidStones, 0);
+  assert.equal(st.party.roster.assassin.unlocked, true);
+
+  // Swap Ranger into Leader slot #0 -> syncLeaderEquipped mirrors Ranger weapon/armor
+  const rangerWep = generateItem({ stage: 6, forcedRarity: 3, forcedSlot: 'weapon' });
+  st.party.roster.ranger.equipment.weapon = rangerWep;
+  assert.equal(setActivePartySlot(st.party, 0, 'ranger'), true);
+  syncLeaderEquipped(st);
+  assert.equal(st.party.activeIds[0], 'ranger');
+  assert.equal(st.equipped.weapon.id, rangerWep.id);
+
+  // Swapping an already-active member swaps their positions cleanly
+  assert.equal(setActivePartySlot(st.party, 0, 'mage'), true);
+  assert.equal(st.party.activeIds[0], 'mage');
+  assert.equal(st.party.activeIds[1], 'ranger');
+});
+
+test('Plan A stats, party synergies, threat targeting, roll quality, 1-slot substat reforge, and auto-equip', () => {
+  const st = createDefaultState();
+  const strongWep = generateItem({ stage: 12, forcedRarity: 4, forcedSlot: 'weapon' });
+  strongWep.uniqueAffix = { key: 'vampiric', val: 6 };
+  st.party.roster.warrior.equipment.weapon = strongWep;
+  st.party.roster.cleric.skills.cleric_aura = 3; // +12% party ATK & HP
+
+  const active = getActiveMembers(st.party);
+  const wStats = calcPartyMemberStats(st.party.roster.warrior, st.equipped, false, active);
+  const mStats = calcPartyMemberStats(st.party.roster.mage, st.equipped, false, active);
+  assert.ok(wStats.atk > mStats.atk, 'Warrior with stage-12 Mythic weapon must out-ATK starter Mage');
+  assert.equal(wStats.vampiricPct, 6);
+  assert.ok(wStats.threatWeight > mStats.threatWeight, 'Warrior must carry higher threat weight than Mage');
+
+  // Shared artifact treasure affix + Ranger treasure skill aggregate cleanly
+  st.equipped.ring.uniqueAffix = { key: 'treasure', val: 12 };
+  st.party.roster.ranger.unlocked = true;
+  st.party.roster.ranger.skills.ranger_treasure = 4;
+  setActivePartySlot(st.party, 2, 'ranger');
+  const bonuses = getPartyBonuses(st.party, st.equipped);
+  assert.equal(bonuses.stoneBonusPct, 12 + 24);
+  assert.equal(bonuses.dropBonusPct, 16);
+
+  // Threat-weighted target picker favors high-threat member
+  let warriorPicks = 0;
+  for (let i = 0; i < 100; i++) {
+    const picked = pickEnemyTargetMember(
+      [
+        { id: 'warrior', threatWeight: 2.5 },
+        { id: 'mage', threatWeight: 0.7 },
+      ],
+      () => i / 100,
+    );
+    if (picked === 'warrior') warriorPicks++;
+  }
+  assert.ok(warriorPicks > 70, `Expected warrior to absorb >70% of hits, got ${warriorPicks}%`);
+
+  // Roll quality & 1-slot substat reforge lock
+  const legendItem = generateItem({ stage: 15, forcedRarity: 3, forcedSlot: 'ring' });
+  const quality = getItemRollQuality(legendItem);
+  assert.ok(quality.pct >= 50 && quality.pct <= 100);
+  assert.ok(['S', 'A', 'B', 'C'].includes(quality.grade));
+  const firstCost = getReforgeCost(legendItem);
+  assert.ok(firstCost > 0);
+  const rf1 = reforgeItemSubstat(legendItem, 1, () => 0.4);
+  assert.ok(rf1 !== null);
+  assert.equal(legendItem.reforgedSubIdx, 1);
+  assert.equal(legendItem.reforgeCount, 1);
+  assert.ok(getReforgeCost(legendItem) > firstCost);
+  // Second slot is locked once slot 1 has been reforged
+  assert.equal(reforgeItemSubstat(legendItem, 0, () => 0.4), null);
+  // Same slot can be reforged again
+  assert.ok(reforgeItemSubstat(legendItem, 1, () => 0.7) !== null);
+  assert.equal(legendItem.reforgeCount, 2);
+
+  // Auto-equip picks stronger candidate from inventory
+  const weakStarter = st.party.roster.mage.equipment.weapon;
+  const upgradeWep = generateItem({ stage: 10, forcedRarity: 3, forcedSlot: 'weapon' });
+  const best = findBestAutoEquipCandidate([upgradeWep], weakStarter, 'weapon');
+  assert.equal(best?.id, upgradeWep.id);
+});
+
+test('parseSaveState migrates legacy 1-hero save cleanly into 3-member active party without losing gear', () => {
+  const base = createDefaultState();
+  const heroWeapon = generateItem({ stage: 20, forcedRarity: 3, forcedSlot: 'weapon' });
+  const heroArmor = generateItem({ stage: 20, forcedRarity: 3, forcedSlot: 'armor' });
+  heroWeapon.uniqueAffix = { key: 'first_strike', val: 35 };
+
+  const legacySave = JSON.stringify({
+    stage: 22,
+    maxStage: 25,
+    stones: 500,
+    equipped: {
+      ...base.equipped,
+      weapon: heroWeapon,
+      armor: heroArmor,
+    },
+    inventory: [],
+    stash: [],
+  });
+
+  const parsed = parseSaveState(legacySave);
+  assert.ok(parsed !== null);
+  assert.deepEqual(parsed.party.activeIds, ['warrior', 'mage', 'cleric']);
+  assert.equal(parsed.party.roster.warrior.equipment.weapon.id, heroWeapon.id);
+  assert.equal(parsed.party.roster.warrior.equipment.weapon.uniqueAffix?.key, 'first_strike');
+  assert.equal(parsed.party.roster.warrior.equipment.armor.id, heroArmor.id);
+  assert.equal(parsed.equipped.weapon.id, heroWeapon.id);
+  assert.equal(parsed.party.roster.mage.unlocked, true);
+  assert.equal(parsed.party.roster.cleric.unlocked, true);
+});
+
 
 
 
