@@ -7,6 +7,13 @@ import {
   FLOOR_PALETTES,
   RARITIES,
 } from '../game/constants';
+import {
+  ACCESSORY_COMBOS,
+  resolveTurnAttackPlan,
+  type ComboSlashStyle,
+  type ComboVfxProfile,
+  type TurnHitResult,
+} from '../game/accessories';
 import { playSfx } from '../game/audio';
 import {
   advanceFairyCooldown,
@@ -16,7 +23,7 @@ import {
   getFairyProfile,
   getFairyRank,
 } from '../game/fairy';
-import { calcHitDamage, clamp, fmt, generateItem, rand } from '../game/items';
+import { calcHeroStats, clamp, fmt, generateItem, rand } from '../game/items';
 import {
   angDiff,
   bfsPath,
@@ -41,17 +48,6 @@ import {
   stepEnemiesTowardHero,
 } from '../game/maze';
 import {
-  calcEnemyExpReward,
-  calcPartyMemberStats,
-  getActiveMembers,
-  getPartyBonuses,
-  grantPartyExp,
-  JOB_DEFS,
-  JOB_ORDER,
-  pickEnemyTargetMember,
-  type MemberCombatStats,
-} from '../game/party';
-import {
   getCompiledSprite,
   getWallTextureCanvas,
 } from '../game/pixelArt';
@@ -65,6 +61,7 @@ import {
   rollSanctumKeyDrop,
 } from '../game/sanctum';
 import type {
+  AccessoryComboId,
   CrawlSizeMode,
   DungeonRoom,
   Enemy,
@@ -72,7 +69,6 @@ import type {
   FloorPalette,
   GameState,
   Item,
-  JobId,
   MazeCell,
   MazeEvent,
   MoveStyle,
@@ -95,6 +91,7 @@ interface DungeonViewportProps {
     kills: number;
     maxDmg: number;
     cleared100: boolean;
+    comboId: AccessoryComboId;
     floorEncounters: number;
     stepsToStairs: number;
     stairsFound: boolean;
@@ -155,11 +152,8 @@ export function DungeonViewport({
   const mapCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const hudBarRef = useRef<HTMLDivElement | null>(null);
   const fxLayerRef = useRef<HTMLDivElement | null>(null);
-  const partyCardRefs = useRef<Array<HTMLDivElement | null>>([null, null, null]);
-  const partyHpBarRefs = useRef<Array<HTMLDivElement | null>>([null, null, null]);
-  const partyHpTextRefs = useRef<Array<HTMLDivElement | null>>([null, null, null]);
-  const partyCtBarRefs = useRef<Array<HTMLDivElement | null>>([null, null, null]);
-  const partyCtTextRefs = useRef<Array<HTMLSpanElement | null>>([null, null, null]);
+  const heroHpBarRef = useRef<HTMLDivElement | null>(null);
+  const heroHpTextRef = useRef<HTMLDivElement | null>(null);
   const lootBannerRef = useRef<HTMLDivElement | null>(null);
   const battleBannerRef = useRef<HTMLDivElement | null>(null);
 
@@ -243,6 +237,8 @@ export function DungeonViewport({
     enemyFlashTimer: 0,
     screenShake: 0,
     heroHurtFlash: 0,
+    comboFlashTimer: 0,
+    comboFlashColor: 'rgba(125, 211, 252, 0.25)',
     hitstopTimer: 0,
     dying: null as { spriteId: SpriteKey; wx: number; wy: number; t: number; scale: number } | null,
     events: [] as MazeEvent[],
@@ -261,12 +257,7 @@ export function DungeonViewport({
 
     battleMode: 'WALKING' as 'WALKING' | 'FIGHTING' | 'RESTING' | 'TRANSITION' | 'RECOVERING',
     heroHp: 110,
-    partyRuntime: Object.fromEntries(
-      JOB_ORDER.map((id) => [
-        id,
-        { hp: -1, maxHp: 110, ct: 1, shieldPct: 0, shieldTurns: 0 },
-      ]),
-    ) as Record<JobId, { hp: number; maxHp: number; ct: number; shieldPct: number; shieldTurns: number }>,
+    heroMaxHp: 110,
     rareEscapeTimer: 0,
     transTimer: 0,
     recoverTimer: 0,
@@ -274,9 +265,9 @@ export function DungeonViewport({
     enemy: null as Enemy | null,
   });
 
-  // Zero-GC pooled particle & canvas slash ring buffers
+  // Zero-GC pooled particle, canvas slash, and staggered multi-hit VFX queues
   const fxPoolRef = useRef({
-    particles: Array.from({ length: 72 }, () => ({
+    particles: Array.from({ length: 96 }, () => ({
       active: false,
       x: 0.5,
       y: 0.5,
@@ -288,7 +279,7 @@ export function DungeonViewport({
       color: '#fde047',
     })),
     pCursor: 0,
-    slashes: Array.from({ length: 8 }, () => ({
+    slashes: Array.from({ length: 16 }, () => ({
       active: false,
       x: 0.5,
       y: 0.52,
@@ -297,9 +288,19 @@ export function DungeonViewport({
       maxLife: 0.22,
       color: '#ffffff',
       accent: '#fde047',
+      secondary: '#38bdf8',
       thick: 4,
+      style: 'flurry' as ComboSlashStyle,
+      scale: 1,
+      showRing: false,
     })),
     sCursor: 0,
+    pendingHits: [] as Array<{
+      delay: number;
+      hit: TurnHitResult;
+      vfx: ComboVfxProfile;
+      soundOn: boolean;
+    }>,
   });
 
   const bannerTimersRef = useRef<{
@@ -337,21 +338,32 @@ export function DungeonViewport({
     nx: number,
     ny: number,
     angle: number,
-    tier: number,
+    opts: {
+      accent: string;
+      secondary: string;
+      thick: number;
+      style: ComboSlashStyle;
+      scale?: number;
+      showRing?: boolean;
+      maxLife?: number;
+    },
   ) => {
     const pool = fxPoolRef.current;
     const s = pool.slashes[pool.sCursor];
     pool.sCursor = (pool.sCursor + 1) % pool.slashes.length;
     s.active = true;
-    s.x = nx + rand(-0.03, 0.03);
-    s.y = ny + rand(-0.03, 0.03);
+    s.x = nx + rand(-0.035, 0.035);
+    s.y = ny + rand(-0.035, 0.035);
     s.angle = angle;
-    s.maxLife = tier >= 2 ? 0.28 : 0.2;
+    s.maxLife = opts.maxLife ?? 0.24;
     s.life = s.maxLife;
     s.color = '#ffffff';
-    s.accent =
-      tier >= 3 ? '#f472b6' : tier === 2 ? '#f87171' : tier === 1 ? '#fde047' : '#bae6fd';
-    s.thick = tier >= 2 ? 6 : 4;
+    s.accent = opts.accent;
+    s.secondary = opts.secondary;
+    s.thick = opts.thick;
+    s.style = opts.style;
+    s.scale = opts.scale ?? 1;
+    s.showRing = Boolean(opts.showRing);
   };
 
   const spawnFloatText = (xPct: number, yPct: number, text: string, cls: string) => {
@@ -556,68 +568,26 @@ export function DungeonViewport({
       return { stairsFound, explorePct, stepsToStairs };
     };
 
-    const syncPartyRuntime = (healFull = false) => {
+    const syncHeroHp = (healFull = false) => {
       const st = stateRef.current;
-      const activeMembers = getActiveMembers(st.party);
-      const statsMap = {} as Record<JobId, MemberCombatStats>;
-      let totalHp = 0;
-
-      for (const m of activeMembers) {
-        const ms = calcPartyMemberStats(m, st.equipped, st.cleared100, activeMembers);
-        statsMap[m.id] = ms;
-        const rt = sim.partyRuntime[m.id];
-        rt.maxHp = ms.hp;
-        if (healFull || rt.hp < 0) {
-          rt.hp = ms.hp;
-          rt.shieldPct = 0;
-          rt.shieldTurns = 0;
-          if (healFull) rt.ct = 1;
-        } else {
-          rt.hp = clamp(rt.hp, 0, ms.hp);
-        }
-        totalHp += rt.hp;
+      const stats = calcHeroStats(st.equipped, st.cleared100);
+      sim.heroMaxHp = Math.max(1, stats.hp);
+      if (healFull || sim.heroHp < 0) {
+        sim.heroHp = sim.heroMaxHp;
+      } else {
+        sim.heroHp = clamp(sim.heroHp, 0, sim.heroMaxHp);
       }
-      sim.heroHp = totalHp;
-      return { activeMembers, statsMap };
+      return stats;
     };
 
-    const getLowestPartyHpStatus = (): { hp: number; maxHp: number } => {
-      const { activeMembers } = syncPartyRuntime(false);
-      let worstRatio = 2;
-      let worstHp = 100;
-      let worstMax = 100;
-      for (const m of activeMembers) {
-        const rt = sim.partyRuntime[m.id];
-        if (rt.hp <= 0) continue;
-        const ratio = rt.hp / Math.max(1, rt.maxHp);
-        if (ratio < worstRatio) {
-          worstRatio = ratio;
-          worstHp = rt.hp;
-          worstMax = rt.maxHp;
-        }
-      }
-      return { hp: worstHp, maxHp: worstMax };
-    };
-
-    const healPartyByPct = (pct: number, reviveKo = false): number => {
-      const { activeMembers } = syncPartyRuntime(false);
-      let totalHealed = 0;
-      for (const m of activeMembers) {
-        const rt = sim.partyRuntime[m.id];
-        if (rt.hp <= 0) {
-          if (reviveKo) {
-            const revived = Math.max(1, Math.round(rt.maxHp * 0.3));
-            rt.hp = revived;
-            totalHealed += revived;
-          }
-          continue;
-        }
-        const add = Math.max(1, Math.round(rt.maxHp * pct));
-        const nextHp = Math.min(rt.maxHp, rt.hp + add);
-        totalHealed += nextHp - rt.hp;
-        rt.hp = nextHp;
-      }
-      return totalHealed;
+    const healHeroByPct = (pct: number): number => {
+      syncHeroHp(false);
+      if (sim.heroHp <= 0) return 0;
+      const add = Math.max(1, Math.round(sim.heroMaxHp * pct));
+      const nextHp = Math.min(sim.heroMaxHp, sim.heroHp + add);
+      const healed = nextHp - sim.heroHp;
+      sim.heroHp = nextHp;
+      return healed;
     };
 
     const triggerMazeEvent = (ev: MazeEvent) => {
@@ -644,12 +614,9 @@ export function DungeonViewport({
         callbacksRef.current.onItemDrop(it, false);
         if (it.rarity >= 3) showPromoteLootBanner(it);
       } else if (ev.type === 'weapon' || ev.type === 'armor' || ev.type === 'accessory') {
-        const accPool = ['ring', 'necklace', 'gauntlets', 'boots'] as const;
-        const forcedSlot =
-          ev.type === 'accessory' ? accPool[Math.floor(Math.random() * accPool.length)] : ev.type;
         const it = generateItem({
           stage: st.stage,
-          forcedSlot,
+          forcedSlot: ev.type,
           isBoss: Math.random() < 0.3,
           cleared100: st.cleared100,
         });
@@ -666,11 +633,11 @@ export function DungeonViewport({
         spawnFloatText(50, 42, `💎 +${fmt(stoneGain)}`, 'float-loot');
         callbacksRef.current.onAddLog(`強化石の結晶を拾った！ (+${fmt(stoneGain)}💎)`, '#38bdf8');
       } else if (ev.type === 'heal') {
-        const totalHealed = healPartyByPct(0.38, true);
+        const healed = healHeroByPct(0.38);
         playSfx('drop', st.soundOn);
-        spawnFloatText(34, 72, `💚 全員回復 +${fmt(totalHealed)}`, 'float-loot');
+        spawnFloatText(34, 72, `💚 HP +${fmt(healed)}`, 'float-loot');
         spawnCanvasParticles(0.5, 0.65, 10, ['#4ade80', '#86efac', '#ffffff'], 0.8);
-        callbacksRef.current.onAddLog(`💚 回復薬でパーティ全員のHPを回復！`, '#4ade80');
+        callbacksRef.current.onAddLog(`💚 回復薬でHPを ${fmt(healed)} 回復した！`, '#4ade80');
       }
     };
 
@@ -705,6 +672,7 @@ export function DungeonViewport({
       sim.turnCount = 0;
       sim.turnAction = null;
       sim.needNewFloor = false;
+      fxPoolRef.current.pendingHits.length = 0;
       st.floorEncounters = 0;
 
       const palIdx = Math.floor((st.stage - 1) / 100) % FLOOR_PALETTES.length;
@@ -878,26 +846,12 @@ export function DungeonViewport({
     const descendStairs = () => {
       const st = stateRef.current;
       const prevStage = st.stage;
-      const prevMaxStage = st.maxStage;
       const prog = resolveBossVictoryProgression(st);
       st.clearedSanctumMax = prog.nextClearedSanctumMax;
       st.maxStage = prog.nextMaxStage;
       st.stage = prog.nextStage;
       st.floorEncounters = 0;
       sim.needNewFloor = true;
-
-      if (prevMaxStage < 3 && st.maxStage >= 3 && !st.party.roster.ranger.unlocked) {
-        callbacksRef.current.onAddLog(
-          '🏹 新たな仲間「カイト（狩人）」が無料加入可能！編成画面から迎えよう',
-          '#a3e635',
-        );
-      }
-      if (prevMaxStage < 8 && st.maxStage >= 8 && !st.party.roster.assassin.unlocked) {
-        callbacksRef.current.onAddLog(
-          '🗡️ 新たな仲間「クロエ（暗殺者）」が無料加入可能！編成画面から迎えよう',
-          '#e879f9',
-        );
-      }
 
       if (prog.sanctumCleared) {
         callbacksRef.current.onAddLog(
@@ -999,47 +953,26 @@ export function DungeonViewport({
 
       const fairyProfile = getFairyProfile(getFairyRank(st.maxStage, st.cleared100));
       const activeBuff = getActiveFairyBuff(st.fairy);
-      const partyBonuses = getPartyBonuses(st.party, st.equipped);
       const stoneBuffMult =
-        (activeBuff?.kind === 'stones' ? 1 + fairyProfile.buffStonePct / 100 : 1) *
-        (1 + partyBonuses.stoneBonusPct / 100);
+        activeBuff?.kind === 'stones' ? 1 + fairyProfile.buffStonePct / 100 : 1;
 
       const stoneScale = enemy.isRareEscape
-        ? 5.0
+        ? 4.5
         : enemy.isGreatDemon
           ? 8.0
           : enemy.isSanctumBoss
             ? 6.0
             : enemy.isMidBoss
-              ? 2.5
+              ? 3.8
               : isBoss
-                ? 2.0
+                ? 3.2
                 : 1.0;
       const stoneGain = Math.max(
         1,
-        Math.round(((1.4 + st.stage * 0.58) * stoneScale + rand(0, 1.5)) * stoneBuffMult),
+        Math.round(((3.4 + st.stage * 1.35) * stoneScale + rand(0, 1.8)) * stoneBuffMult),
       );
       st.stones += stoneGain;
       spawnFloatText(50, 42, `+${fmt(stoneGain)} 💎`, 'float-loot');
-
-      // EXP付与 & レベルアップ判定（控えも50%獲得）
-      const expGain = calcEnemyExpReward(st.stage, isBoss, enemy.isSanctumBoss);
-      const levelUps = grantPartyExp(st.party, expGain);
-      if (levelUps.length > 0) {
-        playSfx('upgrade', st.soundOn);
-        for (const lu of levelUps) {
-          const jDef = JOB_DEFS[lu.id];
-          callbacksRef.current.onAddLog(
-            `🎉 ${jDef.icon}${jDef.name} Lv.${lu.newLevel}に成長！ (SP+${lu.gainedSp})`,
-            '#fde047',
-          );
-          const rt = sim.partyRuntime[lu.id];
-          if (rt && rt.hp > 0) {
-            rt.hp = Math.min(rt.maxHp, rt.hp + Math.round(rt.maxHp * 0.25));
-          }
-        }
-        spawnFloatText(50, 22, `🎉 LEVEL UP!`, 'float-crit');
-      }
 
       if (enemy.isRareEscape) {
         st.chests += 1;
@@ -1108,7 +1041,7 @@ export function DungeonViewport({
       }
 
       if (!enemy.isRareEscape && !enemy.isSanctumBoss) {
-        const dropChance = Math.min(0.95, (isBoss ? 0.78 : 0.28) * (1 + partyBonuses.dropBonusPct / 100));
+        const dropChance = isBoss ? 0.85 : 0.32;
         if (Math.random() < dropChance) {
           const dropped = generateItem({ stage: st.stage, isBoss, cleared100: st.cleared100 });
           callbacksRef.current.onItemDrop(dropped, false);
@@ -1121,8 +1054,8 @@ export function DungeonViewport({
         }
       }
 
-      // 勝利後パーティ回復（僧侶の「慈愛の祈り」加算＋戦闘不能者は30%で蘇生）
-      healPartyByPct((12 + partyBonuses.victoryHealPct) / 100, true);
+      // 勝利後HP回復（18%）
+      healHeroByPct(0.18);
 
       const deathWx = defeatedFloorEnemy ? defeatedFloorEnemy.x + 0.5 : sim.enemyCell ? sim.enemyCell.x + 0.5 : null;
       const deathWy = defeatedFloorEnemy ? defeatedFloorEnemy.y + 0.5 : sim.enemyCell ? sim.enemyCell.y + 0.5 : null;
@@ -1224,8 +1157,8 @@ export function DungeonViewport({
       sim.path = null;
       sim.exploreTarget = null;
 
-      const low = getLowestPartyHpStatus();
-      if (!sim.inSanctumFloor && sim.chokeHoldRoomId === null && shouldEnterRestMode(low.hp, low.maxHp)) {
+      syncHeroHp(false);
+      if (!sim.inSanctumFloor && sim.chokeHoldRoomId === null && shouldEnterRestMode(sim.heroHp, sim.heroMaxHp)) {
         sim.battleMode = 'RESTING';
       } else {
         sim.battleMode = 'WALKING';
@@ -1234,90 +1167,27 @@ export function DungeonViewport({
       syncFloorHud(false);
     };
 
-    const rollSingleHitDamage = (
-      stats: MemberCombatStats,
-      multFactor: number,
-      isBoss: boolean,
-      enemyDefRate: number,
-      guaranteedCritBoost = 0,
-      extraArmorPen = 0,
-    ) => {
-      let tier: 0 | 1 | 2 | 3 = 0;
-
-      if (stats.critRate <= 100) {
-        if (Math.random() * 100 < stats.critRate) tier = 1;
-      } else if (stats.critRate <= 200) {
-        tier = Math.random() * 100 < stats.critRate - 100 ? 2 : 1;
-      } else {
-        tier = Math.random() * 100 < Math.min(100, stats.critRate - 200) ? 3 : 2;
-      }
-
-      if (guaranteedCritBoost > 0) {
-        const cap = stateRef.current.cleared100 ? 3 : 2;
-        tier = Math.min(cap, Math.max(1, tier + guaranteedCritBoost)) as 0 | 1 | 2 | 3;
-      }
-
-      const effectiveStats =
-        extraArmorPen > 0
-          ? { ...stats, armorPen: Math.min(100, stats.armorPen + extraArmorPen) }
-          : stats;
-
-      const dmg = calcHitDamage(effectiveStats, enemyDefRate, isBoss, tier, multFactor, rand(0.95, 1.05));
-      return { dmg, tier };
-    };
-
     const updateHeroHpBar = () => {
-      const { activeMembers } = syncPartyRuntime(false);
-      for (let i = 0; i < 3; i++) {
-        const m = activeMembers[i];
-        if (!m) continue;
-        const rt = sim.partyRuntime[m.id];
-        const def = JOB_DEFS[m.id];
-        const hpPct = clamp((rt.hp / Math.max(1, rt.maxHp)) * 100, 0, 100);
-        const cd = Math.max(1, def.activeSkillCd);
-        const ctProg = clamp(((cd - rt.ct) / cd) * 100, 0, 100);
-
-        const hpBar = partyHpBarRefs.current[i];
-        if (hpBar) {
-          hpBar.style.width = `${hpPct}%`;
-          hpBar.style.background =
-            rt.hp <= 0
-              ? '#475569'
-              : hpPct < 35
-                ? 'linear-gradient(90deg, #dc2626, #f87171)'
-                : 'linear-gradient(90deg, #16a34a, #4ade80)';
-        }
-        const hpText = partyHpTextRefs.current[i];
-        if (hpText) {
-          const shieldTag = rt.shieldTurns > 0 && rt.shieldPct > 0 ? ' 🛡️' : '';
-          hpText.textContent =
-            rt.hp <= 0
-              ? 'KO'
-              : sim.battleMode === 'RESTING'
-                ? `💚 ${fmt(rt.hp)}/${fmt(rt.maxHp)}`
-                : `${fmt(rt.hp)}/${fmt(rt.maxHp)}${shieldTag}`;
-        }
-        const ctBar = partyCtBarRefs.current[i];
-        if (ctBar) {
-          ctBar.style.width = `${ctProg}%`;
-        }
-        const ctText = partyCtTextRefs.current[i];
-        if (ctText) {
-          ctText.textContent = rt.ct <= 1 ? '⚡次発動' : `CT ${rt.ct}`;
-        }
-        const card = partyCardRefs.current[i];
-        if (card) {
-          card.style.opacity = rt.hp <= 0 ? '0.48' : '1';
-        }
+      syncHeroHp(false);
+      const hpPct = clamp((sim.heroHp / Math.max(1, sim.heroMaxHp)) * 100, 0, 100);
+      if (heroHpBarRef.current) {
+        heroHpBarRef.current.style.width = `${hpPct}%`;
+        heroHpBarRef.current.style.background =
+          hpPct < 35
+            ? 'linear-gradient(90deg, #dc2626, #f87171)'
+            : 'linear-gradient(90deg, #16a34a, #4ade80)';
+      }
+      if (heroHpTextRef.current) {
+        heroHpTextRef.current.textContent =
+          sim.battleMode === 'RESTING'
+            ? `💚 回復中 ${fmt(sim.heroHp)}/${fmt(sim.heroMaxHp)}`
+            : `HP ${fmt(sim.heroHp)}/${fmt(sim.heroMaxHp)}`;
       }
     };
 
     const triggerHeroDefeat = () => {
       const st = stateRef.current;
       sim.heroHp = 0;
-      for (const id of st.party.activeIds) {
-        sim.partyRuntime[id].hp = 0;
-      }
       sim.battleMode = 'RECOVERING';
       sim.recoverTimer = 1.1;
       sim.chokeHoldRoomId = null;
@@ -1328,14 +1198,14 @@ export function DungeonViewport({
       const retreatStage = resolveDefeatRetreatStage(st.stage);
       st.stage = retreatStage;
       if (wasSanctum) {
-        showBattleBanner(`💀 ${failedStage}F玄室で全滅… ${retreatStage}Fへ撤退`);
+        showBattleBanner(`💀 ${failedStage}F玄室で敗北… ${retreatStage}Fへ撤退`);
         callbacksRef.current.onAddLog(
-          `💀 ${failedStage}F玄室の大ボスに敗北！${retreatStage}Fで装備・スキルを整えよう`,
+          `💀 ${failedStage}F玄室の大ボスに敗北！${retreatStage}Fで装備を整えよう`,
           '#f87171',
         );
       } else if (retreatStage < failedStage) {
         showBattleBanner(`撤退！ステージ${st.stage}で態勢を立て直す`);
-        callbacksRef.current.onAddLog(`パーティ全滅によりステージ${st.stage}へ撤退しました`, '#f87171');
+        callbacksRef.current.onAddLog(`敗北によりステージ${st.stage}へ撤退しました`, '#f87171');
       } else {
         showBattleBanner('体勢を立て直した！');
       }
@@ -1343,354 +1213,184 @@ export function DungeonViewport({
       callbacksRef.current.onSyncHud({ bossActive: false });
     };
 
+    const emitHitVfx = (hit: TurnHitResult, vfx: ComboVfxProfile, soundOn: boolean) => {
+      const tier = hit.critTier;
+      const isFinisher = hit.isFinalHit && hit.totalHits > 1;
+      const hitTag = hit.isFollowUp ? `×${hit.hitIndex + 1} ` : '';
+      const label =
+        tier === 3
+          ? `🌈極${hitTag}${fmt(hit.dmg)}!!!`
+          : tier === 2
+            ? `🔥超${hitTag}${fmt(hit.dmg)}!!`
+            : tier === 1
+              ? `⚡${hitTag}${fmt(hit.dmg)}!`
+              : hit.isFollowUp
+                ? `❄️${hitTag}${fmt(hit.dmg)}`
+                : `${fmt(hit.dmg)}`;
+      const cls =
+        tier === 3
+          ? 'float-hyper-crit'
+          : tier === 2
+            ? 'float-super-crit'
+            : tier === 1
+              ? 'float-crit'
+              : 'float-dmg';
+
+      const xOffset = hit.isFollowUp ? (hit.hitIndex % 2 === 1 ? -9 : 9) : 0;
+      const yPos = Math.max(18, 34 - hit.hitIndex * 4.5);
+      spawnFloatText(50 + xOffset, yPos, label, cls);
+
+      const style = vfx.slashStyle;
+      const useSecondary =
+        (style === 'frostfire' && (isFinisher || hit.hitIndex % 2 === 1)) ||
+        (style === 'twin_spark' && hit.hitIndex % 2 === 1) ||
+        (style === 'pierce' && hit.isFollowUp) ||
+        (style === 'judgment' && hit.critTier >= 1);
+      const accent =
+        tier >= 3
+          ? '#f472b6'
+          : useSecondary
+            ? vfx.secondaryColor
+            : vfx.primaryColor;
+      const secondary = useSecondary ? vfx.primaryColor : vfx.secondaryColor;
+      const thick = vfx.slashThickness + (tier >= 2 ? 1.8 : tier === 1 ? 0.8 : 0);
+
+      const baseAngles: number[] =
+        style === 'flurry'
+          ? [hit.hitIndex % 2 === 0 ? -0.78 : 0.78]
+          : style === 'shatter' || style === 'flare_bolt' || style === 'molten_crush'
+            ? [-0.66, 0.66]
+            : style === 'bolt' || style === 'judgment'
+              ? [-0.42, 0.52]
+              : tier >= 2 || isFinisher
+                ? [-0.62, 0.62]
+                : [hit.hitIndex % 2 === 0 ? -0.62 : 0.62];
+
+      const showRing =
+        style === 'shatter' ||
+        style === 'cleave' ||
+        style === 'pierce' ||
+        style === 'molten_crush' ||
+        (style === 'frostfire' && isFinisher);
+
+      for (const ang of baseAngles) {
+        spawnCanvasSlash(
+          0.5 + (hit.isFollowUp ? rand(-0.07, 0.07) : 0),
+          0.5 + (hit.isFollowUp ? rand(-0.05, 0.05) : 0),
+          ang + rand(-0.08, 0.08),
+          {
+            accent,
+            secondary,
+            thick,
+            style,
+            scale: style === 'cleave' || style === 'shatter' ? 1.22 : isFinisher ? 1.15 : 1.0,
+            showRing,
+            maxLife: tier >= 2 || style === 'shatter' || style === 'cleave' ? 0.28 : 0.21,
+          },
+        );
+      }
+
+      const pColors =
+        tier >= 3
+          ? ['#f472b6', '#fde047', '#38bdf8', '#4ade80']
+          : vfx.particleColors;
+      const pCount = Math.max(
+        5,
+        Math.round((vfx.particleCount * (hit.isFollowUp ? 0.65 : 1)) + (tier >= 2 ? 8 : tier === 1 ? 4 : 0)),
+      );
+      spawnCanvasParticles(
+        0.5 + (hit.isFollowUp ? rand(-0.06, 0.06) : 0),
+        0.5,
+        pCount,
+        pColors,
+        (tier >= 1 ? 1.2 : 0.92) * (style === 'cleave' || style === 'bolt' ? 1.15 : 1),
+      );
+
+      if (hit.hitIndex === 0 || tier >= 1 || isFinisher) {
+        const baseShake = tier >= 2 ? 0.2 : tier === 1 ? 0.12 : 0.075;
+        sim.screenShake = Math.max(sim.screenShake, baseShake * vfx.shakeScale);
+      }
+      if (hit.hitIndex === 0 || isFinisher) {
+        sim.comboFlashColor = vfx.flashColor;
+        sim.comboFlashTimer = Math.max(sim.comboFlashTimer, 0.13);
+      }
+      playSfx(tier >= 1 ? 'crit' : 'hit', soundOn);
+    };
+
     const executeHeroAttack = (targetFloorEnemy?: FloorEnemy | null): boolean => {
       const st = stateRef.current;
-      const { activeMembers, statsMap } = syncPartyRuntime(false);
+      const stats = syncHeroHp(false);
 
-      let curFe: FloorEnemy | null = targetFloorEnemy ?? null;
-      let curEnemy: Enemy | null = curFe ? curFe.enemy : sim.enemy;
+      const curFe: FloorEnemy | null = targetFloorEnemy ?? null;
+      const curEnemy: Enemy | null = curFe ? curFe.enemy : sim.enemy;
       if (!curEnemy || curEnemy.hp <= 0) return false;
 
-      const hitSummary = { bestTier: 0 as 0 | 1 | 2 | 3, anyHit: false };
-      const isInTransition = () => sim.battleMode === 'TRANSITION';
+      const plan = resolveTurnAttackPlan(stats, curEnemy, st.cleared100);
+      if (plan.maxHitDmg > st.maxDmg) {
+        st.maxDmg = plan.maxHitDmg;
+        callbacksRef.current.onSyncHud({});
+      }
 
-      const applySingleStrike = (
-        attackerId: JobId,
-        mStats: MemberCombatStats,
-        slotIdx: number,
-        targetEn: Enemy,
-        targetFloor: FloorEnemy | null,
-        mult: number,
-        skillTag: string | null,
-        guaranteedCritBoost = 0,
-        extraPen = 0,
-      ) => {
-        if (targetEn.hp <= 0) return;
-        const isFullHp = targetEn.hp >= targetEn.maxHp;
-        const firstStrikeMult = isFullHp && mStats.firstStrikePct > 0 ? 1 + mStats.firstStrikePct / 100 : 1;
-        const res = rollSingleHitDamage(
-          mStats,
-          mult * firstStrikeMult,
-          targetEn.isBoss,
-          targetEn.defRate,
-          guaranteedCritBoost,
-          extraPen,
-        );
-        hitSummary.anyHit = true;
-        if (res.tier > hitSummary.bestTier) hitSummary.bestTier = res.tier;
+      curEnemy.hp -= plan.totalDmg;
+      if (curFe) {
+        curFe.shake = 0.18 + Math.min(0.16, (plan.hits.length - 1) * 0.05);
+        curFe.flashTimer = 0.07;
+      }
+      sim.enemyShake = 0.18 + Math.min(0.16, (plan.hits.length - 1) * 0.05);
+      sim.enemyFlashTimer = 0.07;
 
-        if (res.dmg > st.maxDmg) {
-          st.maxDmg = res.dmg;
-          callbacksRef.current.onSyncHud({});
-        }
-
-        const prefix = skillTag ? `${skillTag} ` : '';
-        const label =
-          res.tier === 3
-            ? `${prefix}🌈極${fmt(res.dmg)}!!!`
-            : res.tier === 2
-              ? `${prefix}🔥超${fmt(res.dmg)}!!`
-              : res.tier === 1
-                ? `${prefix}⚡${fmt(res.dmg)}!`
-                : `${prefix}${fmt(res.dmg)}`;
-        const cls =
-          res.tier === 3
-            ? 'float-hyper-crit'
-            : res.tier === 2
-              ? 'float-super-crit'
-              : res.tier === 1
-                ? 'float-crit'
-                : 'float-dmg';
-        spawnFloatText(36 + slotIdx * 14, 28 + slotIdx * 7, label, cls);
-
-        targetEn.hp -= res.dmg;
-        if (targetFloor) {
-          targetFloor.shake = 0.18;
-          targetFloor.flashTimer = 0.065;
-        }
-        sim.enemyShake = 0.18;
-        sim.enemyFlashTimer = 0.065;
-
-        // 吸血 (Vampiric)
-        if (mStats.vampiricPct > 0) {
-          const rt = sim.partyRuntime[attackerId];
-          if (rt.hp > 0 && rt.hp < rt.maxHp) {
-            const leech = Math.max(1, Math.round((res.dmg * mStats.vampiricPct) / 100));
-            rt.hp = Math.min(rt.maxHp, rt.hp + leech);
-          }
-        }
-
-        // 薙ぎ払い (Cleave) 固有特性
-        if (mStats.cleavePct > 0 && !sim.inSanctumFloor) {
-          const heroRoomId = sim.roomGrid[sim.hero.cy]?.[sim.hero.cx] ?? -1;
-          const splashTarget = sim.floorEnemies.find(
-            (fe) =>
-              fe.enemy.hp > 0 &&
-              fe !== targetFloor &&
-              (Math.abs(fe.x - sim.hero.cx) + Math.abs(fe.y - sim.hero.cy) <= 1 ||
-                (heroRoomId >= 0 && fe.roomId === heroRoomId)),
-          );
-          if (splashTarget) {
-            const splashDmg = Math.max(1, Math.round((res.dmg * mStats.cleavePct) / 100));
-            splashTarget.enemy.hp -= splashDmg;
-            splashTarget.shake = 0.14;
-            splashTarget.flashTimer = 0.05;
-            if (splashTarget.enemy.hp <= 0) {
-              splashTarget.enemy.hp = 0;
-              handleEnemyDefeated(splashTarget);
-            }
-          }
-        }
-
-        if (targetEn.hp <= 0) {
-          targetEn.hp = 0;
-          handleEnemyDefeated(targetFloor ?? undefined);
-        }
-      };
-
-      for (let slotIdx = 0; slotIdx < activeMembers.length; slotIdx++) {
-        const m = activeMembers[slotIdx];
-        const rt = sim.partyRuntime[m.id];
-        if (rt.hp <= 0) continue;
-        if (isInTransition()) break;
-
-        // 前の仲間の攻撃で正面の敵が倒れていれば、他の隣接敵へ自動スイッチ
-        if (!curEnemy || curEnemy.hp <= 0) {
-          if (sim.inSanctumFloor) break;
-          const nextEngaged = getEngagedEnemies(
-            { x: sim.hero.cx, y: sim.hero.cy },
-            sim.floorEnemies,
-            sim.hero.angle,
-          );
-          if (nextEngaged.length === 0) break;
-          curFe = nextEngaged[0];
-          curEnemy = curFe.enemy;
-          sim.enemy = curEnemy;
-          sim.enemyCell = { x: curFe.x, y: curFe.y };
-        }
-
-        if (rt.shieldTurns > 0) {
-          rt.shieldTurns -= 1;
-          if (rt.shieldTurns <= 0) rt.shieldPct = 0;
-        }
-        rt.ct = Math.max(0, rt.ct - 1);
-        const mStats = statsMap[m.id];
-        const def = JOB_DEFS[m.id];
-
-        if (rt.ct === 0) {
-          rt.ct = mStats.activeSkillCd;
-
-          if (m.id === 'cleric') {
-            const skLv = m.skills.cleric_heal ?? 0;
-            // HP78%未満の味方がいれば最優先で自動ヒール
-            const injured = activeMembers
-              .filter((ally) => sim.partyRuntime[ally.id].hp > 0)
-              .sort(
-                (a, b) =>
-                  sim.partyRuntime[a.id].hp / Math.max(1, sim.partyRuntime[a.id].maxHp) -
-                  sim.partyRuntime[b.id].hp / Math.max(1, sim.partyRuntime[b.id].maxHp),
-              );
-            const lowest = injured[0];
-            if (lowest && sim.partyRuntime[lowest.id].hp / Math.max(1, sim.partyRuntime[lowest.id].maxHp) < 0.78) {
-              const basePct = (24 + skLv * 6) / 100;
-              const lRt = sim.partyRuntime[lowest.id];
-              const mainHeal = Math.max(1, Math.round(lRt.maxHp * basePct * mStats.healPowerMult));
-              lRt.hp = Math.min(lRt.maxHp, lRt.hp + mainHeal);
-              for (const other of injured.slice(1)) {
-                const oRt = sim.partyRuntime[other.id];
-                const subHeal = Math.max(1, Math.round(oRt.maxHp * basePct * 0.35 * mStats.healPowerMult));
-                oRt.hp = Math.min(oRt.maxHp, oRt.hp + subHeal);
-              }
-              spawnFloatText(24 + slotIdx * 14, 68, `💚 +${fmt(mainHeal)}`, 'float-loot');
-              spawnCanvasParticles(0.5, 0.7, 8, ['#4ade80', '#86efac', '#ffffff'], 0.75);
-              continue;
-            }
-            // 味方HPが十分なら聖光で攻撃
-            const holyMult = (1.2 + skLv * 0.18) * (1 + mStats.skillMultBonus);
-            applySingleStrike(m.id, mStats, slotIdx, curEnemy, curFe, holyMult, '✨聖光');
-          } else if (m.id === 'warrior') {
-            const skLv = m.skills.warrior_bash ?? 0;
-            rt.shieldPct = 25 + skLv * 6;
-            rt.shieldTurns = 2;
-            const bashMult = 1.4 + skLv * 0.22;
-            applySingleStrike(m.id, mStats, slotIdx, curEnemy, curFe, bashMult, '🛡️強撃');
-          } else if (m.id === 'mage') {
-            const skLv = m.skills.mage_storm ?? 0;
-            const heroRoomId = sim.roomGrid[sim.hero.cy]?.[sim.hero.cx] ?? -1;
-            const aoeTargets: Array<{ enemy: Enemy; fe: FloorEnemy | null }> = [{ enemy: curEnemy, fe: curFe }];
-            if (!sim.inSanctumFloor) {
-              for (const fe of sim.floorEnemies) {
-                if (fe.enemy.hp <= 0 || fe === curFe) continue;
-                const near =
-                  Math.abs(fe.x - sim.hero.cx) + Math.abs(fe.y - sim.hero.cy) <= 1 ||
-                  (heroRoomId >= 0 && fe.roomId === heroRoomId);
-                if (near) {
-                  aoeTargets.push({ enemy: fe.enemy, fe });
-                  if (aoeTargets.length >= 4) break;
-                }
-              }
-            }
-            const singleBonus = aoeTargets.length === 1 ? 1.25 : 1.0;
-            const stormMult = (1.2 + skLv * 0.22) * (1 + mStats.skillMultBonus) * singleBonus;
-            spawnCanvasParticles(0.5, 0.48, 12, ['#f97316', '#fde047', '#38bdf8'], 1.25);
-            for (const tgt of aoeTargets) {
-              if (isInTransition()) break;
-              applySingleStrike(m.id, mStats, slotIdx, tgt.enemy, tgt.fe, stormMult, '☄️火嵐');
-            }
-          } else if (m.id === 'ranger') {
-            const skLv = m.skills.ranger_multi ?? 0;
-            const shots = skLv >= 3 ? 3 : 2;
-            const shotMult = 0.68 + skLv * 0.11;
-            for (let s = 0; s < shots; s++) {
-              if (isInTransition()) break;
-              if (!curEnemy || curEnemy.hp <= 0) {
-                if (sim.inSanctumFloor) break;
-                const next = getEngagedEnemies({ x: sim.hero.cx, y: sim.hero.cy }, sim.floorEnemies, sim.hero.angle);
-                if (next.length === 0) break;
-                curFe = next[0];
-                curEnemy = curFe.enemy;
-              }
-              applySingleStrike(m.id, mStats, slotIdx, curEnemy, curFe, shotMult, s === 0 ? '🏹連射' : null);
-            }
-          } else if (m.id === 'assassin') {
-            const skLv = m.skills.assassin_edge ?? 0;
-            const edgeMult = 1.45 + skLv * 0.24;
-            applySingleStrike(m.id, mStats, slotIdx, curEnemy, curFe, edgeMult, '⚡刃', 1, 20);
-          }
+      const vfx = plan.combo.vfx;
+      const speedDiv = Math.max(1, Math.min(2.2, sim.speed * 0.65));
+      for (const hit of plan.hits) {
+        if (hit.hitIndex === 0) {
+          emitHitVfx(hit, vfx, st.soundOn);
         } else {
-          // 通常攻撃
-          applySingleStrike(m.id, mStats, slotIdx, curEnemy, curFe, 1.0, null);
-          // 連撃固有特性 (Double Hit)
-          if (
-            mStats.doubleHitPct > 0 &&
-            curEnemy.hp > 0 &&
-            !isInTransition() &&
-            Math.random() * 100 < mStats.doubleHitPct
-          ) {
-            applySingleStrike(m.id, mStats, slotIdx, curEnemy, curFe, 0.55, `${def.icon}追撃`);
-          }
+          fxPoolRef.current.pendingHits.push({
+            delay: (hit.hitIndex * vfx.staggerSec) / speedDiv,
+            hit,
+            vfx,
+            soundOn: st.soundOn,
+          });
         }
       }
 
-      if (hitSummary.anyHit) {
-        const bestTier = hitSummary.bestTier;
-        const slashAngles = bestTier >= 2 ? [-0.62, 0.62] : [-0.62];
-        for (const ang of slashAngles) {
-          spawnCanvasSlash(0.5, 0.51, ang, bestTier);
-        }
-        spawnCanvasParticles(
-          0.5,
-          0.5,
-          bestTier >= 2 ? 14 : bestTier === 1 ? 9 : 5,
-          bestTier >= 3
-            ? ['#f472b6', '#fde047', '#38bdf8', '#4ade80']
-            : bestTier === 2
-              ? ['#ef4444', '#fb923c', '#fde047']
-              : bestTier === 1
-                ? ['#fde047', '#ffffff']
-                : ['#e2e8f0', '#93c5fd'],
-          bestTier >= 1 ? 1.15 : 0.8,
-        );
-        if (bestTier >= 1) sim.screenShake = Math.max(sim.screenShake, bestTier >= 2 ? 0.22 : 0.12);
-        if (bestTier >= 2) sim.hitstopTimer = Math.max(sim.hitstopTimer, 0.035);
-        playSfx(bestTier >= 1 ? 'crit' : 'hit', st.soundOn);
+      const hitstopBase = plan.highestCritTier >= 2 ? 0.035 : 0;
+      const totalHitstop = hitstopBase + vfx.extraHitstopSec;
+      if (totalHitstop > 0) {
+        sim.hitstopTimer = Math.max(sim.hitstopTimer, totalHitstop);
       }
 
-      return isInTransition();
+      if (curEnemy.hp <= 0) {
+        curEnemy.hp = 0;
+        handleEnemyDefeated(curFe ?? undefined);
+      }
+
+      return sim.battleMode === 'TRANSITION';
     };
 
     const runEnemyTurn = () => {
       if (sim.battleMode === 'TRANSITION' || sim.battleMode === 'RECOVERING') return;
       sim.turnCount += 1;
+      syncHeroHp(false);
 
-      const { activeMembers, statsMap } = syncPartyRuntime(false);
-
-      const applyEnemyStrikeToMember = (
-        attackerEnemy: Enemy,
-        attackerFe: FloorEnemy | null,
-        targetId: JobId,
-        dmgScale = 1.0,
-      ): boolean => {
-        const rt = sim.partyRuntime[targetId];
-        const mStats = statsMap[targetId];
-        const slotIdx = activeMembers.findIndex((m) => m.id === targetId);
-        const totalMitigation = clamp(
-          mStats.damageReducePct + (rt.shieldTurns > 0 ? rt.shieldPct : 0),
-          0,
-          80,
-        );
-        const rawDmg = attackerEnemy.atk * dmgScale * rand(0.9, 1.1);
-        const eDmg = Math.max(1, Math.round(rawDmg * (1 - totalMitigation / 100)));
-
-        rt.hp = Math.max(0, rt.hp - eDmg);
+      const applyEnemyStrike = (attackerEnemy: Enemy): boolean => {
+        const eDmg = Math.max(1, Math.round(attackerEnemy.atk * rand(0.9, 1.1)));
+        sim.heroHp = Math.max(0, sim.heroHp - eDmg);
         sim.heroHurtFlash = 0.22;
         if (attackerEnemy.isBoss) {
           sim.screenShake = Math.max(sim.screenShake, 0.16);
         }
-        spawnFloatText(14 + Math.max(0, slotIdx) * 14, 76, `-${fmt(eDmg)}`, 'float-hero-dmg');
-
-        // 戦士の反撃パッシブ & 棘固有特性
-        if (attackerEnemy.hp > 0 && rt.hp > 0) {
-          if (mStats.counterChancePct > 0 && Math.random() * 100 < mStats.counterChancePct) {
-            const cRes = rollSingleHitDamage(
-              mStats,
-              mStats.counterDmgMult,
-              attackerEnemy.isBoss,
-              attackerEnemy.defRate,
-            );
-            attackerEnemy.hp -= cRes.dmg;
-            if (attackerFe) {
-              attackerFe.shake = 0.15;
-              attackerFe.flashTimer = 0.055;
-            }
-            spawnFloatText(48, 36, `🔥反撃 ${fmt(cRes.dmg)}`, 'float-crit');
-            if (attackerEnemy.hp <= 0) {
-              attackerEnemy.hp = 0;
-              handleEnemyDefeated(attackerFe ?? undefined);
-            }
-          }
-          if (attackerEnemy.hp > 0 && mStats.thornsPct > 0) {
-            const reflectDmg = Math.max(1, Math.round((eDmg * mStats.thornsPct) / 100));
-            attackerEnemy.hp -= reflectDmg;
-            spawnFloatText(54, 40, `🌵${fmt(reflectDmg)}`, 'float-dmg');
-            if (attackerEnemy.hp <= 0) {
-              attackerEnemy.hp = 0;
-              handleEnemyDefeated(attackerFe ?? undefined);
-            }
-          }
-        }
-
-        const anyAlive = activeMembers.some((m) => sim.partyRuntime[m.id].hp > 0);
-        if (!anyAlive) {
+        spawnFloatText(20, 76, `-${fmt(eDmg)}`, 'float-hero-dmg');
+        if (sim.heroHp <= 0) {
           triggerHeroDefeat();
           return true;
         }
         return false;
       };
 
-      const pickTarget = (): JobId | null => {
-        const living = activeMembers
-          .filter((m) => sim.partyRuntime[m.id].hp > 0)
-          .map((m) => ({ id: m.id, threatWeight: statsMap[m.id].threatWeight }));
-        return pickEnemyTargetMember(living);
-      };
-
       if (sim.inSanctumFloor) {
         if (!sim.enemy || sim.enemy.hp <= 0) return;
-        // 玄室ボスは3ターンごとに全体衝撃波（それ以外はヘイト重視の単体攻撃）
-        if (sim.turnCount % 3 === 0) {
-          showBattleBanner(`💥 ${sim.enemy.name}の全体衝撃波！`);
-          for (const m of activeMembers) {
-            if (sim.partyRuntime[m.id].hp <= 0) continue;
-            if (applyEnemyStrikeToMember(sim.enemy, null, m.id, 0.62)) return;
-            if (!sim.enemy || sim.enemy.hp <= 0) return;
-          }
-        } else {
-          const targetId = pickTarget();
-          if (targetId) {
-            applyEnemyStrikeToMember(sim.enemy, null, targetId, 1.0);
-          }
-        }
+        applyEnemyStrike(sim.enemy);
         return;
       }
 
@@ -1704,12 +1404,7 @@ export function DungeonViewport({
         if ((fe.enemy.isKeyKeeper || fe.enemy.isBoss) && sim.turnCount % 2 !== 0) {
           continue;
         }
-        const targetId = pickTarget();
-        if (!targetId) {
-          triggerHeroDefeat();
-          return;
-        }
-        if (applyEnemyStrikeToMember(fe.enemy, fe, targetId, 1.0)) return;
+        if (applyEnemyStrike(fe.enemy)) return;
         if ((sim.battleMode as string) === 'TRANSITION') return;
       }
 
@@ -1779,10 +1474,10 @@ export function DungeonViewport({
       }
 
       if (sim.battleMode === 'RESTING') {
-        const low = getLowestPartyHpStatus();
+        syncHeroHp(false);
         if (engageAdjacentIfAny()) {
           // 回復中に敵が隣接したら即反撃へ
-        } else if (!shouldExitRestMode(low.hp, low.maxHp)) {
+        } else if (!shouldExitRestMode(sim.heroHp, sim.heroMaxHp)) {
           sim.turnAction = {
             kind: 'rest',
             t: 0,
@@ -1915,15 +1610,15 @@ export function DungeonViewport({
         return;
       }
 
-      // 未訪問部屋の入口前で最低HPメンバーが60%未満なら入室前に回復待機へ移行
+      // 未訪問部屋の入口前でHPが60%未満なら入室前に回復待機へ移行
       const curRoom = sim.roomGrid[h.cy]?.[h.cx] ?? -1;
       const nextRoom = sim.roomGrid[nextCell.y]?.[nextCell.x] ?? -1;
-      const lowBeforeRoom = getLowestPartyHpStatus();
+      syncHeroHp(false);
       if (
         curRoom === -1 &&
         nextRoom >= 0 &&
         !sim.visitedRooms.has(nextRoom) &&
-        shouldEnterRestMode(lowBeforeRoom.hp, lowBeforeRoom.maxHp)
+        shouldEnterRestMode(sim.heroHp, sim.heroMaxHp)
       ) {
         sim.battleMode = 'RESTING';
         sim.path = null;
@@ -1970,7 +1665,7 @@ export function DungeonViewport({
       if (sim.battleMode === 'RECOVERING') {
         sim.recoverTimer -= speedDt;
         if (sim.recoverTimer <= 0) {
-          syncPartyRuntime(true);
+          syncHeroHp(true);
           enterFloor();
         }
         updateHeroHpBar();
@@ -2022,7 +1717,7 @@ export function DungeonViewport({
           h.angle = action.targetAngle;
           sim.turnAction = null;
 
-          healPartyByPct(0.025, false);
+          healHeroByPct(0.03);
           sim.stepped.add(crawlKey(h.cx, h.cy));
           crawlReveal();
           checkPathEvents();
@@ -2122,12 +1817,12 @@ export function DungeonViewport({
         }
       } else if (action.kind === 'rest') {
         if (p >= 1) {
-          healPartyByPct(0.14, true);
+          healHeroByPct(0.14);
           spawnCanvasParticles(0.5, 0.72, 4, ['#4ade80', '#86efac'], 0.55);
           sim.turnAction = null;
           runEnemyTurn();
-          const lowAfterRest = getLowestPartyHpStatus();
-          if (sim.battleMode === 'RESTING' && shouldExitRestMode(lowAfterRest.hp, lowAfterRest.maxHp)) {
+          syncHeroHp(false);
+          if (sim.battleMode === 'RESTING' && shouldExitRestMode(sim.heroHp, sim.heroMaxHp)) {
             sim.battleMode = 'WALKING';
           }
         }
@@ -2343,13 +2038,24 @@ export function DungeonViewport({
       }
       if (sim.screenShake > 0) sim.screenShake = Math.max(0, sim.screenShake - rdt);
       if (sim.heroHurtFlash > 0) sim.heroHurtFlash = Math.max(0, sim.heroHurtFlash - rdt);
+      if (sim.comboFlashTimer > 0) sim.comboFlashTimer = Math.max(0, sim.comboFlashTimer - rdt);
       if (sim.dying) {
         sim.dying.t -= rdt;
         if (sim.dying.t <= 0) sim.dying = null;
       }
 
-      // Advance zero-GC pooled particles & canvas slashes
+      // Advance zero-GC pooled particles, canvas slashes, and staggered multi-hit VFX
       const pool = fxPoolRef.current;
+      if (pool.pendingHits.length > 0 && !sim.paused) {
+        for (let i = pool.pendingHits.length - 1; i >= 0; i--) {
+          const entry = pool.pendingHits[i];
+          entry.delay -= rdt;
+          if (entry.delay <= 0) {
+            pool.pendingHits.splice(i, 1);
+            emitHitVfx(entry.hit, entry.vfx, entry.soundOn);
+          }
+        }
+      }
       for (const p of pool.particles) {
         if (!p.active) continue;
         p.life -= rdt;
@@ -2811,28 +2517,81 @@ export function DungeonViewport({
         );
       }
 
-      // Draw pooled canvas slash arcs
+      // Draw pooled combo-styled canvas slashes & shockwave rings
       for (const sl of pool.slashes) {
         if (!sl.active) continue;
         const prog = 1 - sl.life / sl.maxLife;
         const alpha = Math.max(0, 1 - prog * prog);
-        const len = Math.min(W, H) * (0.22 + prog * 0.08);
+        const len = Math.min(W, H) * (0.22 + prog * 0.09) * sl.scale;
         ctx.save();
         ctx.translate(sl.x * W, sl.y * H);
-        ctx.rotate(sl.angle);
         ctx.globalAlpha = alpha;
+
+        if (sl.showRing) {
+          const ringR = len * (0.32 + prog * 0.48);
+          ctx.strokeStyle = sl.secondary;
+          ctx.lineWidth = Math.max(1.5, 3.5 * (1 - prog));
+          ctx.beginPath();
+          ctx.arc(0, 0, ringR, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+
+        ctx.rotate(sl.angle);
         ctx.shadowColor = sl.accent;
-        ctx.shadowBlur = 12;
-        ctx.strokeStyle = sl.accent;
-        ctx.lineWidth = sl.thick + 2;
-        ctx.beginPath();
-        ctx.arc(0, 0, len * 0.55, -0.75, 0.75);
-        ctx.stroke();
-        ctx.strokeStyle = sl.color;
-        ctx.lineWidth = Math.max(1.5, sl.thick * 0.5);
-        ctx.beginPath();
-        ctx.arc(0, 0, len * 0.55, -0.65, 0.65);
-        ctx.stroke();
+        ctx.shadowBlur = 14;
+
+        if (sl.style === 'bolt' || sl.style === 'flare_bolt' || sl.style === 'judgment') {
+          // Jagged electric lightning slash
+          const half = len * 0.58;
+          ctx.strokeStyle = sl.accent;
+          ctx.lineWidth = sl.thick + 2;
+          ctx.beginPath();
+          ctx.moveTo(-half, -half * 0.25);
+          ctx.lineTo(-half * 0.35, half * 0.12);
+          ctx.lineTo(0, -half * 0.16);
+          ctx.lineTo(half * 0.35, half * 0.16);
+          ctx.lineTo(half, -half * 0.12);
+          ctx.stroke();
+
+          ctx.strokeStyle = sl.color;
+          ctx.lineWidth = Math.max(1.5, sl.thick * 0.45);
+          ctx.stroke();
+        } else if (sl.style === 'shatter' || sl.style === 'molten_crush') {
+          // Heavy armor-shatter diagonal cleave with secondary shard line
+          const half = len * 0.62;
+          ctx.strokeStyle = sl.accent;
+          ctx.lineWidth = sl.thick + 3;
+          ctx.beginPath();
+          ctx.moveTo(-half, 0);
+          ctx.lineTo(half, 0);
+          ctx.stroke();
+
+          ctx.strokeStyle = sl.secondary;
+          ctx.lineWidth = Math.max(2, sl.thick * 0.7);
+          ctx.beginPath();
+          ctx.moveTo(-half * 0.75, -6);
+          ctx.lineTo(half * 0.75, 6);
+          ctx.stroke();
+
+          ctx.strokeStyle = sl.color;
+          ctx.lineWidth = Math.max(1.5, sl.thick * 0.4);
+          ctx.beginPath();
+          ctx.moveTo(-half * 0.85, 0);
+          ctx.lineTo(half * 0.85, 0);
+          ctx.stroke();
+        } else {
+          // Crisp sweeping arc (flurry, cleave, frostfire, twin_spark, pierce)
+          ctx.strokeStyle = sl.accent;
+          ctx.lineWidth = sl.thick + 2;
+          ctx.beginPath();
+          ctx.arc(0, 0, len * 0.55, -0.78, 0.78);
+          ctx.stroke();
+          ctx.strokeStyle = sl.color;
+          ctx.lineWidth = Math.max(1.5, sl.thick * 0.5);
+          ctx.beginPath();
+          ctx.arc(0, 0, len * 0.55, -0.66, 0.66);
+          ctx.stroke();
+        }
         ctx.restore();
       }
 
@@ -2873,9 +2632,19 @@ export function DungeonViewport({
             ? '#ec4899'
             : sim.enemy.isSanctumBoss
               ? '#a855f7'
-              : '#dc2626';
+              : !sim.enemy.isBoss && sim.enemy.archetype === 'armored'
+                ? '#d97706'
+                : !sim.enemy.isBoss && sim.enemy.archetype === 'striker'
+                  ? '#e11d48'
+                  : '#dc2626';
         ctx.fillRect(bx, by, bw * Math.max(0, sim.enemy.hp / sim.enemy.maxHp), 8);
-        ctx.fillStyle = sim.enemy.isRareEscape ? '#fde047' : '#fff';
+        ctx.fillStyle = sim.enemy.isRareEscape
+          ? '#fde047'
+          : !sim.enemy.isBoss && sim.enemy.archetype === 'armored'
+            ? '#fcd34d'
+            : !sim.enemy.isBoss && sim.enemy.archetype === 'striker'
+              ? '#fda4af'
+              : '#fff';
         ctx.font = 'bold 13px sans-serif';
         ctx.textAlign = 'center';
         ctx.fillText(
@@ -2906,6 +2675,19 @@ export function DungeonViewport({
       ctx.fillStyle = vg;
       ctx.fillRect(0, 0, W, H);
 
+      // Subtle elemental combo accent flash on impact
+      if (sim.comboFlashTimer > 0) {
+        const ca = Math.min(1, sim.comboFlashTimer / 0.13);
+        ctx.save();
+        ctx.globalAlpha = ca * 0.65;
+        const cvg = ctx.createRadialGradient(W / 2, H / 2, H * 0.18, W / 2, H / 2, H * 0.75);
+        cvg.addColorStop(0, sim.comboFlashColor);
+        cvg.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = cvg;
+        ctx.fillRect(0, 0, W, H);
+        ctx.restore();
+      }
+
       // Red damage vignette when hero is struck
       if (sim.heroHurtFlash > 0) {
         const ha = Math.min(0.35, (sim.heroHurtFlash / 0.22) * 0.32);
@@ -2922,14 +2704,14 @@ export function DungeonViewport({
 
     engineApiRef.current = {
       resetToCurrentStage: () => {
-        syncPartyRuntime(true);
+        syncHeroHp(true);
         sim.battleMode = 'WALKING';
         enterFloor();
         updateHeroHpBar();
       },
     };
 
-    syncPartyRuntime(true);
+    syncHeroHp(true);
     fitCanvas();
     enterFloor();
     updateHeroHpBar();
@@ -3122,7 +2904,7 @@ export function DungeonViewport({
 
         {/* Player-Only Sanctum Entry / Retreat Button */}
         {inSanctum ? (
-          <div className="absolute bottom-[74px] left-3 z-20 flex flex-col items-start gap-1">
+          <div className="absolute bottom-[56px] left-3 z-20 flex flex-col items-start gap-1">
             <button
               type="button"
               data-testid="btn-retreat-sanctum"
@@ -3133,7 +2915,7 @@ export function DungeonViewport({
             </button>
           </div>
         ) : sanctumTarget !== null ? (
-          <div className="absolute bottom-[74px] left-3 z-20 flex flex-col items-start gap-1">
+          <div className="absolute bottom-[56px] left-3 z-20 flex flex-col items-start gap-1">
             <button
               type="button"
               data-testid="btn-enter-sanctum"
@@ -3169,67 +2951,39 @@ export function DungeonViewport({
           className="pointer-events-none absolute left-1/2 top-11 z-20 -translate-x-1/2 -translate-y-2.5 whitespace-nowrap rounded-full border-2 border-amber-400 bg-slate-900/95 px-3.5 py-1.5 text-xs font-extrabold text-white opacity-0 shadow-2xl transition duration-200"
         />
 
-        {/* 3-Character Full-Auto Party HP & Skill-CT HUD */}
-        <div
-          id="party-hud"
-          data-testid="party-hud"
-          className="absolute bottom-2 left-2.5 z-10 flex items-stretch gap-1.5"
-        >
-          {stateRef.current.party.activeIds.map((id, idx) => {
-            const def = JOB_DEFS[id];
-            const member = stateRef.current.party.roster[id];
-            return (
-              <div
-                key={`${idx}-${id}`}
-                ref={(el) => {
-                  partyCardRefs.current[idx] = el;
-                }}
-                className="flex w-[112px] flex-col gap-0.5 rounded-lg border border-slate-400/30 bg-[#020610]/78 px-2 py-1 backdrop-blur-[2px] max-sm:w-[86px] max-sm:px-1.5"
-              >
-                <div className="flex items-center justify-between gap-1 text-[10px] font-extrabold leading-none">
-                  <span className="truncate" style={{ color: def.accentColor }}>
-                    {def.icon} {def.name}
-                  </span>
-                  <span className="shrink-0 text-[9px] text-slate-300">Lv.{member.level}</span>
-                </div>
-                <div className="h-2 w-full overflow-hidden rounded border border-white/20 bg-black/80">
-                  <div
-                    ref={(el) => {
-                      partyHpBarRefs.current[idx] = el;
-                    }}
-                    className="h-full w-full bg-gradient-to-r from-green-600 to-green-400 transition-[width] duration-100"
-                  />
-                </div>
-                <div className="flex items-center justify-between gap-1 text-[9px] leading-none text-slate-200">
-                  <div
-                    ref={(el) => {
-                      partyHpTextRefs.current[idx] = el;
-                    }}
-                    className="truncate font-bold"
-                  >
-                    --/--
-                  </div>
-                  <span
-                    ref={(el) => {
-                      partyCtTextRefs.current[idx] = el;
-                    }}
-                    className="shrink-0 font-bold text-amber-300"
-                  >
-                    CT
-                  </span>
-                </div>
-                <div className="h-1 w-full overflow-hidden rounded-full bg-slate-800/90">
-                  <div
-                    ref={(el) => {
-                      partyCtBarRefs.current[idx] = el;
-                    }}
-                    className="h-full w-0 bg-gradient-to-r from-amber-500 to-yellow-300 transition-[width] duration-150"
-                  />
-                </div>
+        {/* Single-Hero HP & Active Resonance HUD */}
+        {(() => {
+          const activeCombo = ACCESSORY_COMBOS[hudSnapshot.comboId];
+          return (
+            <div
+              id="hero-hp-wrap"
+              data-testid="hero-hp-hud"
+              className="absolute bottom-2.5 left-2.5 z-10 flex w-[196px] flex-col gap-1 rounded-lg border border-slate-400/35 bg-[#020610]/85 px-2.5 py-1.5 max-sm:w-[162px]"
+            >
+              <div className="flex items-center justify-between gap-1 text-[11px] font-extrabold leading-none text-slate-100">
+                <span ref={heroHpTextRef}>HP --/--</span>
+                <span
+                  data-testid="hud-combo-tag"
+                  title={`${activeCombo.name}: ${activeCombo.effectText}`}
+                  className="shrink-0 rounded px-1 py-0.5 text-[9px] font-extrabold"
+                  style={{
+                    color: activeCombo.accentColor,
+                    background: activeCombo.badgeBg,
+                    border: `1px solid ${activeCombo.badgeBorder}`,
+                  }}
+                >
+                  {activeCombo.icons} {activeCombo.name}
+                </span>
               </div>
-            );
-          })}
-        </div>
+              <div className="h-2.5 w-full overflow-hidden rounded border border-white/25 bg-black/80">
+                <div
+                  ref={heroHpBarRef}
+                  className="h-full w-full bg-gradient-to-r from-green-600 to-green-400 transition-[width] duration-100"
+                />
+              </div>
+            </div>
+          );
+        })()}
 
         {/* Floating FX layer */}
         <div ref={fxLayerRef} className="pointer-events-none absolute inset-0 z-10 overflow-hidden" />

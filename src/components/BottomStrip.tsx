@@ -1,37 +1,27 @@
 import { useState, type DragEvent } from 'react';
-import { MAX_BAG_SIZE, MAX_STASH_SIZE, PERSONAL_SLOTS, RARITIES, SLOT_ORDER, SLOTS } from '../game/constants';
-import { fmt, getMainStatVal } from '../game/items';
-import {
-  calcPartyMemberStats,
-  canRecruitCharacter,
-  expToNextLevel,
-  getActiveMembers,
-  getMemberEquippedSet,
-  getPartyBonuses,
-  JOB_DEFS,
-  JOB_ORDER,
-} from '../game/party';
+import { getAccessoryCombo } from '../game/accessories';
+import { EQUIP_SLOT_ORDER, EQUIP_SLOTS, MAX_BAG_SIZE, MAX_STASH_SIZE, RARITIES } from '../game/constants';
+import { calcHeroStats, fmt, getItemMainStatMeta, getMainStatVal, getStageFeaturedDrop } from '../game/items';
 import { getNextManualStage, getPrevManualStage, isSanctumFloor } from '../game/sanctum';
-import type { DragItemPayload, GameState, JobId, SlotKey, WindowKey } from '../game/types';
+import { countReadySynthesisRecipes } from '../game/synthesis';
+import type { DragItemPayload, EquipSlotKey, GameState, WindowKey } from '../game/types';
 import { PixelSpriteIcon } from './PixelSpriteIcon';
 import { RarityName } from './RarityName';
 
 interface BottomStripProps {
   state: GameState;
   openWindows: Record<WindowKey, boolean>;
-  selectedMemberId: JobId;
   draggedItem: DragItemPayload | null;
-  onSelectMember: (id: JobId) => void;
-  onToggleParty: () => void;
   onPrevStage: () => void;
   onNextStage: () => void;
   onToggleAutoProgress: () => void;
-  onOpenEquipped: (slot?: SlotKey) => void;
+  onOpenEquipped: (slot?: EquipSlotKey) => void;
   onToggleBag: () => void;
   onToggleStash: () => void;
-  onDropEquip: (payload: DragItemPayload) => void;
+  onDropEquip: (payload: DragItemPayload, targetSlot?: EquipSlotKey) => void;
   onDropMoveItem: (payload: DragItemPayload, target: 'bag' | 'stash') => void;
   onOpenChests: () => void;
+  onOpenSynthesis: () => void;
   onToggleSound: () => void;
   onResetSave: () => void;
   onChangeAutoSalvage: (val: number) => void;
@@ -40,10 +30,7 @@ interface BottomStripProps {
 export function BottomStrip({
   state,
   openWindows,
-  selectedMemberId,
   draggedItem,
-  onSelectMember,
-  onToggleParty,
   onPrevStage,
   onNextStage,
   onToggleAutoProgress,
@@ -53,22 +40,18 @@ export function BottomStrip({
   onDropEquip,
   onDropMoveItem,
   onOpenChests,
+  onOpenSynthesis,
   onToggleSound,
   onResetSave,
   onChangeAutoSalvage,
 }: BottomStripProps) {
   const [hoverTarget, setHoverTarget] = useState<string | null>(null);
-  const activeMembers = getActiveMembers(state.party);
-  const selectedMember = state.party.roster[selectedMemberId] ?? activeMembers[0];
-  const selectedDef = JOB_DEFS[selectedMember.id];
-  const displayedEquipped = getMemberEquippedSet(selectedMember, state.equipped);
-  const partyBonuses = getPartyBonuses(state.party, state.equipped);
-  const hasFreeRecruit = JOB_ORDER.some(
-    (id) => canRecruitCharacter(state.party, id, state.maxStage, state.stones).canFree,
-  );
+  const stats = calcHeroStats(state.equipped, state.cleared100);
+  const combo = getAccessoryCombo(state.equipped.acc1, state.equipped.acc2);
 
   const totalChests = state.chests + state.mythicChests;
-  const featuredSlot = SLOTS[SLOT_ORDER[(state.stage - 1) % SLOT_ORDER.length]];
+  const readySynthCount = countReadySynthesisRecipes(state.inventory, state.cleared100);
+  const featuredDrop = getStageFeaturedDrop(state.stage);
   const prevManualStage = getPrevManualStage(state.stage);
   const nextManualStage = getNextManualStage(state.stage, state.maxStage, state.clearedSanctumMax);
   const inSanctum = isSanctumFloor(state.stage);
@@ -78,8 +61,8 @@ export function BottomStrip({
       id="strip-shell"
       className="relative z-20 flex h-[var(--strip-h)] shrink-0 items-stretch overflow-x-auto border-t-2 border-sky-400/35 bg-gradient-to-b from-[#131d31] to-[#0b1120] shadow-[0_-8px_30px_rgba(0,0,0,0.65)]"
     >
-      {/* Left/Center Pane: Stage, 3-Member Party Strip, Selected Member's 6 Slots */}
-      <div className="flex min-w-[465px] flex-[1.28] flex-col justify-between gap-1 border-r border-slate-400/20 bg-slate-900/55 px-3 py-1.5">
+      {/* Left/Center Pane: Stage, 1-Hero Stats, 4 Equipped Slots */}
+      <div className="flex min-w-[490px] flex-[1.32] flex-col justify-between gap-1.5 border-r border-slate-400/20 bg-slate-900/55 px-3 py-1.5">
         <div className="flex items-center justify-between gap-1.5">
           <div className="flex items-center gap-1">
             <button
@@ -91,13 +74,13 @@ export function BottomStrip({
             >
               ◀
             </button>
-            <div className="min-w-[92px] rounded border border-slate-400/20 bg-black/30 px-2 py-0.5 text-center text-xs font-bold">
+            <div className="min-w-[98px] rounded border border-slate-400/20 bg-black/30 px-2 py-0.5 text-center text-xs font-bold">
               {inSanctum ? (
                 <span className="text-purple-300">St.{state.stage} 🏛️玄室</span>
               ) : (
                 <>
-                  St.{state.stage} / {state.maxStage} {featuredSlot.icon}
-                  {featuredSlot.label}UP
+                  St.{state.stage} / {state.maxStage} {featuredDrop.icon}
+                  {featuredDrop.label}UP
                 </>
               )}
             </div>
@@ -130,6 +113,18 @@ export function BottomStrip({
           </div>
 
           <div className="flex shrink-0 items-center gap-1.5">
+            <button
+              type="button"
+              data-testid="strip-combo-badge"
+              onClick={() => onOpenEquipped('acc1')}
+              title={`共鳴スタイル: ${combo.name}（${combo.effectText} / 演出: ${combo.vfxLabel}）`}
+              className="flex shrink-0 items-center gap-1 rounded-md border px-2 py-0.5 text-[11px] font-extrabold text-slate-100 transition hover:brightness-110"
+              style={{ borderColor: combo.badgeBorder, background: combo.badgeBg }}
+            >
+              <span>{combo.icons}</span>
+              <span style={{ color: combo.accentColor }}>{combo.name}</span>
+            </button>
+
             <div
               title="玄室の鍵（各階の鍵持ちボス撃破時に一定確率で獲得。50層ごとの玄室入場ごとに1本消費）"
               className={`flex shrink-0 items-center gap-1 rounded-md border px-2 py-0.5 text-xs font-bold ${
@@ -143,7 +138,7 @@ export function BottomStrip({
             </div>
 
             <div
-              title="強化石（装備の強化・再鍛造・先行加入に使用）"
+              title="強化石（装備の強化に使用）"
               className="flex shrink-0 items-center gap-1 rounded-md border border-sky-400/35 bg-sky-400/10 px-2 py-0.5 text-xs font-bold text-sky-200"
             >
               <span>💎</span>
@@ -152,159 +147,115 @@ export function BottomStrip({
           </div>
         </div>
 
-        {/* 3 Active Party Member Cards */}
-        <div className="grid grid-cols-3 gap-1.5" data-testid="strip-party-cards">
-          {activeMembers.map((member) => {
-            const def = JOB_DEFS[member.id];
-            const mStats = calcPartyMemberStats(member, state.equipped, state.cleared100, activeMembers);
-            const isSelected = member.id === selectedMember.id;
-            const expNeed = expToNextLevel(member.level);
-            const expPct = Math.min(100, Math.round((member.exp / Math.max(1, expNeed)) * 100));
+        {/* 1-Hero Compact Stats Row (6 columns incl. Multi-Hit) */}
+        <div
+          data-testid="hero-stats-strip"
+          className="grid grid-cols-6 gap-1.5 rounded-lg border border-white/10 bg-black/30 px-2.5 py-1 text-[11px]"
+        >
+          <div className="flex flex-col">
+            <span className="text-[9px] text-slate-400">攻撃力</span>
+            <strong className="tabular-nums text-white">{fmt(Math.round(stats.atk))}</strong>
+          </div>
+          <div className="flex flex-col">
+            <span className="text-[9px] text-slate-400">最大HP</span>
+            <strong className="tabular-nums text-emerald-300">{fmt(stats.hp)}</strong>
+          </div>
+          <div className="flex flex-col">
+            <span className="text-[9px] text-slate-400">連撃率</span>
+            <strong className="tabular-nums text-sky-300">{Math.round(stats.multiHitRate)}%</strong>
+          </div>
+          <div className="flex flex-col">
+            <span className="text-[9px] text-slate-400">与ダメ</span>
+            <strong className="tabular-nums text-rose-300">+{stats.dmgPct.toFixed(0)}%</strong>
+          </div>
+          <div className="flex flex-col">
+            <span className="text-[9px] text-slate-400">会心/倍</span>
+            <strong className="tabular-nums text-amber-300">
+              {stats.critRate.toFixed(0)}%/{Math.round(stats.critDmg)}%
+            </strong>
+          </div>
+          <div className="flex flex-col">
+            <span className="text-[9px] text-slate-400">防御貫通</span>
+            <strong className="tabular-nums text-purple-300">{Math.round(stats.rawArmorPen)}%</strong>
+          </div>
+        </div>
+
+        {/* 4 Equipped Slots (2x2 Grid: 武器 / 防具 / アクセ1 / アクセ2) */}
+        <div className="grid grid-cols-2 gap-1" data-testid="strip-equipped-grid">
+          {EQUIP_SLOT_ORDER.map((slotKey) => {
+            const it = state.equipped[slotKey];
+            const slotDef = EQUIP_SLOTS[slotKey];
+            const meta = getItemMainStatMeta(it);
+            const rInfo = RARITIES[it.rarity];
+            const lvTxt = it.level > 0 ? ` +${it.level}` : '';
+            const isDropCandidate = draggedItem?.slot === slotDef.acceptsItemSlot;
+            const isHovered = hoverTarget === `slot:${slotKey}` && isDropCandidate;
 
             return (
               <button
-                key={member.id}
+                key={slotKey}
                 type="button"
-                data-testid={`strip-member-${member.id}`}
-                onClick={() => onSelectMember(member.id)}
-                className={`flex min-w-0 flex-col gap-0.5 rounded-lg border px-2 py-1 text-left transition ${
-                  isSelected
-                    ? 'border-sky-400 bg-sky-950/55 ring-1 ring-sky-400/70'
-                    : 'border-white/10 bg-black/30 hover:bg-slate-800/70'
+                data-strip-slot={slotKey}
+                onClick={() => onOpenEquipped(slotKey)}
+                onDragOver={(e: DragEvent<HTMLButtonElement>) => {
+                  if (!isDropCandidate) return;
+                  e.preventDefault();
+                  e.dataTransfer.dropEffect = 'move';
+                  setHoverTarget(`slot:${slotKey}`);
+                }}
+                onDragLeave={() => {
+                  if (hoverTarget === `slot:${slotKey}`) setHoverTarget(null);
+                }}
+                onDrop={(e: DragEvent<HTMLButtonElement>) => {
+                  e.preventDefault();
+                  setHoverTarget(null);
+                  if (draggedItem && isDropCandidate) onDropEquip(draggedItem, slotKey);
+                }}
+                className={`flex min-w-0 items-center gap-1.5 rounded-md border px-2 py-0.5 text-left transition hover:-translate-y-0.5 hover:brightness-110 ${
+                  isHovered
+                    ? 'ring-2 ring-emerald-400'
+                    : isDropCandidate
+                      ? 'ring-1 ring-emerald-400/70'
+                      : ''
                 }`}
+                style={{ borderColor: isDropCandidate ? '#34d399' : rInfo.border, background: rInfo.bg }}
               >
-                <div className="flex items-center justify-between gap-1">
-                  <span className="truncate text-[11px] font-extrabold" style={{ color: def.accentColor }}>
-                    {def.icon} {def.name}
-                  </span>
-                  <div className="flex shrink-0 items-center gap-1">
-                    {member.unspentSp > 0 && (
-                      <span className="rounded bg-amber-500/25 px-1 text-[9px] font-black text-amber-300">
-                        SP+{member.unspentSp}
-                      </span>
-                    )}
-                    <span className="text-[10px] font-bold text-slate-200">Lv.{member.level}</span>
+                <span className="shrink-0 text-sm">{it.icon}</span>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center justify-between gap-1 text-[10px] font-bold">
+                    <span className="truncate">
+                      <RarityName item={it} text={it.name + lvTxt} />
+                    </span>
+                    <span
+                      className="shrink-0 rounded px-1 text-[9px] font-bold"
+                      style={
+                        meta.axisDef
+                          ? { color: meta.axisDef.color, background: meta.axisDef.bgTint }
+                          : { color: '#94a3b8' }
+                      }
+                    >
+                      {meta.axisDef ? `${slotDef.shortLabel}·${meta.axisDef.shortLabel}` : slotDef.shortLabel}
+                    </span>
                   </div>
-                </div>
-                <div className="flex items-center justify-between text-[10px] text-slate-300">
-                  <span>攻 {fmt(Math.round(mStats.atk))}</span>
-                  <span>HP {fmt(mStats.hp)}</span>
-                  <span className="text-amber-300">{Math.round(mStats.critRate)}%</span>
-                </div>
-                <div className="mt-0.5 h-1 w-full overflow-hidden rounded-full bg-slate-800">
-                  <div
-                    className="h-full bg-gradient-to-r from-sky-500 to-cyan-300 transition-[width] duration-200"
-                    style={{ width: `${expPct}%` }}
-                  />
+                  <div className="truncate text-[9px] text-slate-300">
+                    {meta.mainLabel} +{fmt(getMainStatVal(it))}
+                    {meta.unit}
+                  </div>
                 </div>
               </button>
             );
           })}
         </div>
-
-        {/* Selected Member's 6 Equipment Slots (2 Personal + 4 Shared Artifacts) */}
-        <div className="flex flex-col gap-0.5">
-          <div className="flex items-center justify-between px-0.5 text-[10px] text-slate-400">
-            <span>
-              👤 <strong style={{ color: selectedDef.accentColor }}>{selectedDef.name}</strong>
-              の武器・防具 ＋ ✨パーティ共有遺物4枠
-            </span>
-            <span className="text-slate-500">クリックで強化 / D&D装着</span>
-          </div>
-          <div className="grid grid-cols-3 gap-1">
-            {SLOT_ORDER.map((slotKey) => {
-              const it = displayedEquipped[slotKey];
-              const sInfo = SLOTS[slotKey];
-              const rInfo = RARITIES[it.rarity];
-              const lvTxt = it.level > 0 ? ` +${it.level}` : '';
-              const isDropCandidate = draggedItem?.slot === slotKey;
-              const isHovered = hoverTarget === `slot:${slotKey}` && isDropCandidate;
-              const isPersonal = PERSONAL_SLOTS.includes(slotKey);
-
-              return (
-                <button
-                  key={`${selectedMember.id}-${slotKey}`}
-                  type="button"
-                  onClick={() => onOpenEquipped(slotKey)}
-                  onDragOver={(e: DragEvent<HTMLButtonElement>) => {
-                    if (!isDropCandidate) return;
-                    e.preventDefault();
-                    e.dataTransfer.dropEffect = 'move';
-                    setHoverTarget(`slot:${slotKey}`);
-                  }}
-                  onDragLeave={() => {
-                    if (hoverTarget === `slot:${slotKey}`) setHoverTarget(null);
-                  }}
-                  onDrop={(e: DragEvent<HTMLButtonElement>) => {
-                    e.preventDefault();
-                    setHoverTarget(null);
-                    if (draggedItem && isDropCandidate) onDropEquip(draggedItem);
-                  }}
-                  className={`flex min-w-0 items-center gap-1.5 rounded-md border px-2 py-0.5 text-left transition hover:-translate-y-0.5 hover:brightness-110 ${
-                    isHovered
-                      ? 'ring-2 ring-emerald-400'
-                      : isDropCandidate
-                        ? 'ring-1 ring-emerald-400/70'
-                        : ''
-                  }`}
-                  style={{ borderColor: isDropCandidate ? '#34d399' : rInfo.border, background: rInfo.bg }}
-                >
-                  <span className="shrink-0 text-sm">{it.icon}</span>
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate text-[10px] font-bold">
-                      <RarityName item={it} text={it.name + lvTxt} />
-                    </div>
-                    <div className="flex items-center justify-between gap-1 text-[9px] text-slate-400">
-                      <span className="truncate">
-                        {sInfo.mainLabel} +{fmt(getMainStatVal(it))}
-                        {sInfo.unit}
-                      </span>
-                      <span className="shrink-0 text-[8px] text-slate-500">
-                        {isPersonal ? '個人' : '共有'}
-                      </span>
-                    </div>
-                  </div>
-                </button>
-              );
-            })}
-          </div>
-        </div>
       </div>
 
-      {/* Right Pane: Party, Equipped, Bag, Stash, Chests, Tools, Logs */}
+      {/* Right Pane: Equipped, Bag, Stash, Chests, Synthesis, Tools, Logs */}
       <div className="flex min-w-[365px] flex-1 flex-col gap-1.5 bg-[#0b1120]/70 px-2.5 py-1.5">
         <div className="flex flex-wrap items-center gap-1">
           <button
             type="button"
-            id="btn-open-party"
-            data-testid="btn-open-party"
-            onClick={onToggleParty}
-            className={`relative flex items-center justify-center gap-1 whitespace-nowrap rounded-md border px-2 py-1 text-xs font-extrabold text-white transition hover:brightness-110 ${
-              openWindows.party
-                ? 'border-purple-300 bg-purple-600 ring-1 ring-purple-300/70'
-                : partyBonuses.totalUnspentSp > 0 || hasFreeRecruit
-                  ? 'border-amber-300 bg-gradient-to-br from-purple-700 to-indigo-800 shadow-[0_0_12px_rgba(251,191,36,0.35)]'
-                  : 'border-purple-400/60 bg-gradient-to-br from-purple-700 to-indigo-800'
-            }`}
-          >
-            <span>👥 編成・スキル</span>
-            {partyBonuses.totalUnspentSp > 0 && (
-              <span className="rounded bg-amber-400 px-1 text-[10px] font-black text-slate-950">
-                SP+{partyBonuses.totalUnspentSp}
-              </span>
-            )}
-            {hasFreeRecruit && (
-              <span className="rounded bg-emerald-400 px-1 text-[10px] font-black text-slate-950">
-                新仲間
-              </span>
-            )}
-          </button>
-
-          <button
-            type="button"
             id="btn-open-equipped"
             onClick={() => onOpenEquipped()}
-            className={`flex items-center justify-center gap-1 whitespace-nowrap rounded-md border px-2 py-1 text-xs font-bold text-white transition hover:brightness-110 ${
+            className={`flex items-center justify-center gap-1 whitespace-nowrap rounded-md border px-2.5 py-1 text-xs font-bold text-white transition hover:brightness-110 ${
               openWindows.equipped
                 ? 'border-sky-300 bg-sky-600 ring-1 ring-sky-300/70'
                 : 'border-sky-400/60 bg-gradient-to-br from-sky-700 to-sky-800'
@@ -401,6 +352,26 @@ export function BottomStrip({
             <span data-testid="chest-count-badge">
               {state.mythicChests > 0 ? `${state.chests}+🌈${state.mythicChests}` : state.chests}
             </span>
+          </button>
+
+          <button
+            type="button"
+            id="btn-open-synthesis"
+            data-testid="btn-open-synthesis"
+            onClick={onOpenSynthesis}
+            title="同レアリティ装備9個を上位レア1個へ合成（100F後はミシック合成＆再錬成も解禁）"
+            className={`flex items-center gap-1 whitespace-nowrap rounded-md border px-2 py-1 text-xs font-bold transition ${
+              readySynthCount > 0
+                ? 'border-purple-300 bg-purple-700/80 text-purple-50 shadow-[0_0_10px_rgba(192,132,252,0.4)] hover:brightness-110'
+                : 'border-slate-400/25 bg-slate-800 text-slate-200 hover:bg-slate-700'
+            }`}
+          >
+            <span>⚗️ 合成</span>
+            {readySynthCount > 0 && (
+              <span className="rounded bg-emerald-400/25 px-1 text-[10px] font-extrabold text-emerald-200">
+                可
+              </span>
+            )}
           </button>
 
           <button

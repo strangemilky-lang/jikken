@@ -1,8 +1,26 @@
 export type RarityId = 0 | 1 | 2 | 3 | 4;
 
-export type SlotKey = 'weapon' | 'armor' | 'ring' | 'necklace' | 'gauntlets' | 'boots';
+export type ItemSlot = 'weapon' | 'armor' | 'accessory';
 
-export type MainStatType = 'atk' | 'hp' | 'critRate' | 'critDmg' | 'atkPct' | 'dmgPct';
+export type AccessoryAxis = 'ice' | 'fire' | 'lightning' | 'dark';
+
+export type EquipSlotKey = 'weapon' | 'armor' | 'acc1' | 'acc2';
+
+export type SlotKey = EquipSlotKey;
+
+export type AccessoryComboId =
+  | 'ice+ice'
+  | 'fire+fire'
+  | 'lightning+lightning'
+  | 'dark+dark'
+  | 'ice+fire'
+  | 'ice+lightning'
+  | 'ice+dark'
+  | 'fire+lightning'
+  | 'fire+dark'
+  | 'lightning+dark';
+
+export type MainStatType = 'atk' | 'hp' | 'multiHitRate' | 'dmgPct' | 'critRate' | 'armorPen';
 
 export type SubStatKey =
   | 'atkPct'
@@ -11,6 +29,8 @@ export type SubStatKey =
   | 'dmgPct'
   | 'armorPen'
   | 'bossDmg';
+
+export type StorageFilter = 'all' | 'weapon' | 'armor' | 'accessory' | AccessoryAxis;
 
 export type MoveStyle = 'smooth' | 'step';
 
@@ -22,47 +42,15 @@ export type SortMode = 'newest' | 'rarity' | 'stage' | 'level';
 
 export type ItemLocation = 'bag' | 'stash';
 
-export type WindowKey = 'party' | 'equipped' | 'bag' | 'stash';
+export type WindowKey = 'equipped' | 'bag' | 'stash';
 
-export type JobId = 'warrior' | 'mage' | 'cleric' | 'ranger' | 'assassin';
-
-export type UniqueAffixKey =
-  | 'vampiric'
-  | 'first_strike'
-  | 'cleave'
-  | 'double_hit'
-  | 'thorns'
-  | 'treasure';
-
-export interface UniqueAffix {
-  key: UniqueAffixKey;
-  val: number;
-}
-
-export interface PartyMemberEquipment {
-  weapon: Item;
-  armor: Item;
-}
-
-export interface PartyMemberState {
-  id: JobId;
-  unlocked: boolean;
-  level: number;
-  exp: number;
-  unspentSp: number;
-  skills: Record<string, number>;
-  equipment: PartyMemberEquipment;
-}
-
-export interface PartyState {
-  activeIds: [JobId, JobId, JobId];
-  roster: Record<JobId, PartyMemberState>;
-}
+export type EnemyArchetype = 'normal' | 'armored' | 'striker';
 
 export interface DragItemPayload {
   itemId: string;
   source: ItemLocation;
-  slot: SlotKey;
+  slot: ItemSlot;
+  accAxis?: AccessoryAxis;
 }
 
 export interface SubStat {
@@ -73,7 +61,8 @@ export interface SubStat {
 
 export interface Item {
   id: string;
-  slot: SlotKey;
+  slot: ItemSlot;
+  accAxis?: AccessoryAxis;
   name: string;
   icon: string;
   rarity: RarityId;
@@ -87,12 +76,9 @@ export interface Item {
     base: number;
   };
   subStats: SubStat[];
-  uniqueAffix?: UniqueAffix | null;
-  reforgedSubIdx?: number | null;
-  reforgeCount?: number;
 }
 
-export type EquippedSet = Record<SlotKey, Item>;
+export type EquippedSet = Record<EquipSlotKey, Item>;
 
 export interface LogEntry {
   ts: string;
@@ -126,7 +112,6 @@ export interface GameState {
   maxDmg: number;
   soundOn: boolean;
   equipped: EquippedSet;
-  party: PartyState;
   inventory: Item[];
   stash: Item[];
   fairy: FairyState;
@@ -137,12 +122,15 @@ export interface GameState {
 export interface HeroStats {
   atk: number;
   hp: number;
+  multiHitRate: number;
   critRate: number;
   critDmg: number;
   dmgPct: number;
   armorPen: number;
+  rawArmorPen: number;
   bossDmg: number;
   mythicCount: number;
+  comboId: AccessoryComboId;
   offlinePower: number;
 }
 
@@ -185,6 +173,7 @@ export interface Enemy {
   name: string;
   icon: string;
   spriteId: SpriteKey;
+  archetype: EnemyArchetype;
   isBoss: boolean;
   isKeyKeeper?: boolean;
   isMidBoss: boolean;

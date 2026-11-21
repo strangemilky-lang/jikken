@@ -1,32 +1,16 @@
 import { useState, type DragEvent } from 'react';
+import { getAccessoryCombo } from '../game/accessories';
 import {
+  EQUIP_SLOT_ORDER,
+  EQUIP_SLOTS,
   MAX_BAG_SIZE,
   MAX_STASH_SIZE,
   MYTHIC_MAX_EQUIP_LEVEL,
-  PERSONAL_SLOTS,
   RARITIES,
-  SHARED_ARTIFACT_SLOTS,
-  SLOT_ORDER,
-  SLOTS,
   SUB_MAP,
-  UNIQUE_AFFIX_MAP,
 } from '../game/constants';
-import { fmt, getMainStatVal } from '../game/items';
-import {
-  calcPartyMemberStats,
-  getActiveMembers,
-  getMemberEquippedSet,
-  JOB_DEFS,
-  JOB_ORDER,
-} from '../game/party';
-import type {
-  DragItemPayload,
-  EquippedSet,
-  JobId,
-  PartyState,
-  SlotKey,
-  WindowKey,
-} from '../game/types';
+import { calcHeroStats, fmt, getItemMainStatMeta, getMainStatVal } from '../game/items';
+import type { DragItemPayload, EquipSlotKey, EquippedSet, WindowKey } from '../game/types';
 import { FloatingWindow, type WindowPos, type WindowSize } from './FloatingWindow';
 import { ItemDetailPanel } from './ItemDetailPanel';
 import { RarityName } from './RarityName';
@@ -38,12 +22,10 @@ interface EquippedWindowProps {
   windowSize: WindowSize;
   stones: number;
   equipped: EquippedSet;
-  party: PartyState;
   cleared100: boolean;
-  selectedMemberId: JobId;
   bagCount: number;
   stashCount: number;
-  selectedSlot: SlotKey;
+  selectedSlot: EquipSlotKey;
   draggedItem: DragItemPayload | null;
   isRollingUpgrade: boolean;
   rouletteActiveIdx: number | null;
@@ -52,12 +34,9 @@ interface EquippedWindowProps {
   onFocus: () => void;
   onMovePosition: (pos: WindowPos) => void;
   onResizeWindow: (size: WindowSize) => void;
-  onSelectMember: (id: JobId) => void;
-  onSelectSlot: (slot: SlotKey) => void;
-  onDropEquip: (payload: DragItemPayload) => void;
+  onSelectSlot: (slot: EquipSlotKey) => void;
+  onDropEquip: (payload: DragItemPayload, targetSlot?: EquipSlotKey) => void;
   onUpgradeItem: (id: string) => void;
-  onReforgeSubstat: (id: string, subIdx: number) => void;
-  onAutoEquip: (memberId: JobId) => void;
   onToggleLock: (id: string) => void;
   onOpenWindow: (win: WindowKey) => void;
   onClose: () => void;
@@ -70,9 +49,7 @@ export function EquippedWindow({
   windowSize,
   stones,
   equipped,
-  party,
   cleared100,
-  selectedMemberId,
   bagCount,
   stashCount,
   selectedSlot,
@@ -84,74 +61,81 @@ export function EquippedWindow({
   onFocus,
   onMovePosition,
   onResizeWindow,
-  onSelectMember,
   onSelectSlot,
   onDropEquip,
   onUpgradeItem,
-  onReforgeSubstat,
-  onAutoEquip,
   onToggleLock,
   onOpenWindow,
   onClose,
 }: EquippedWindowProps) {
-  const [hoveredSlot, setHoveredSlot] = useState<SlotKey | null>(null);
+  const [hoveredSlot, setHoveredSlot] = useState<EquipSlotKey | null>(null);
 
-  const member = party.roster[selectedMemberId] ?? party.roster[party.activeIds[0]];
-  const memberDef = JOB_DEFS[member.id];
-  const memberEquipped = getMemberEquippedSet(member, equipped);
-  const activeMembers = getActiveMembers(party);
-  const memberStats = calcPartyMemberStats(member, equipped, cleared100, activeMembers);
-  const unlockedMembers = JOB_ORDER.map((id) => party.roster[id]).filter((m) => m.unlocked);
-  const activeItem = memberEquipped[selectedSlot];
+  const stats = calcHeroStats(equipped, cleared100);
+  const combo = getAccessoryCombo(equipped.acc1, equipped.acc2);
+  const activeItem = equipped[selectedSlot];
 
-  const handleSlotDragOver = (e: DragEvent<HTMLElement>, slotKey: SlotKey) => {
+  const canSlotAccept = (slotKey: EquipSlotKey, payload: DragItemPayload | null) => {
+    if (!payload) return false;
+    return EQUIP_SLOTS[slotKey].acceptsItemSlot === payload.slot;
+  };
+
+  const handleSlotDragOver = (e: DragEvent<HTMLElement>, slotKey: EquipSlotKey) => {
     if (!draggedItem || isRollingUpgrade) return;
-    if (draggedItem.slot !== slotKey) return;
+    if (!canSlotAccept(slotKey, draggedItem)) return;
     e.preventDefault();
+    e.stopPropagation();
     e.dataTransfer.dropEffect = 'move';
     if (hoveredSlot !== slotKey) setHoveredSlot(slotKey);
   };
 
-  const handleSlotDrop = (e: DragEvent<HTMLElement>, slotKey: SlotKey) => {
+  const handleSlotDrop = (e: DragEvent<HTMLElement>, slotKey: EquipSlotKey) => {
     e.preventDefault();
+    e.stopPropagation();
     setHoveredSlot(null);
     if (!draggedItem || isRollingUpgrade) return;
-    if (draggedItem.slot !== slotKey) return;
-    onDropEquip(draggedItem);
+    if (!canSlotAccept(slotKey, draggedItem)) return;
+    onDropEquip(draggedItem, slotKey);
   };
 
   const handleContainerDragOver = (e: DragEvent<HTMLDivElement>) => {
     if (!draggedItem || isRollingUpgrade) return;
     e.preventDefault();
     e.dataTransfer.dropEffect = 'move';
-    setHoveredSlot(draggedItem.slot);
+    const fallbackSlot: EquipSlotKey =
+      draggedItem.slot === 'accessory'
+        ? selectedSlot === 'acc1' || selectedSlot === 'acc2'
+          ? selectedSlot
+          : 'acc1'
+        : draggedItem.slot;
+    setHoveredSlot(fallbackSlot);
   };
 
   const handleContainerDrop = (e: DragEvent<HTMLDivElement>) => {
     e.preventDefault();
+    const target = hoveredSlot ?? undefined;
     setHoveredSlot(null);
     if (!draggedItem || isRollingUpgrade) return;
-    onDropEquip(draggedItem);
+    onDropEquip(draggedItem, target);
   };
 
-  const renderSlotCard = (slotKey: SlotKey) => {
-    const it = memberEquipped[slotKey];
-    const sInfo = SLOTS[slotKey];
+  const renderSlotCard = (slotKey: EquipSlotKey) => {
+    const it = equipped[slotKey];
+    const slotDef = EQUIP_SLOTS[slotKey];
+    const meta = getItemMainStatMeta(it);
     const rInfo = RARITIES[it.rarity];
     const selected = selectedSlot === slotKey;
-    const isDropCandidate = draggedItem?.slot === slotKey;
+    const isDropCandidate = canSlotAccept(slotKey, draggedItem);
     const isHovered = hoveredSlot === slotKey && isDropCandidate;
-    const affix = it.uniqueAffix ? UNIQUE_AFFIX_MAP[it.uniqueAffix.key] : null;
 
     return (
       <button
-        key={`${member.id}-${slotKey}-${it.id}`}
+        key={`${slotKey}-${it.id}`}
         type="button"
         data-slot-card={slotKey}
         onClick={() => !isRollingUpgrade && onSelectSlot(slotKey)}
         onDragOver={(e) => handleSlotDragOver(e, slotKey)}
         onDrop={(e) => handleSlotDrop(e, slotKey)}
-        className={`flex w-full flex-col rounded-lg border px-2.5 py-1.5 text-left transition ${
+        className={`flex w-full flex-col rounded-lg border px-2.5 py-2 text-left transition ${
           isHovered
             ? 'bg-emerald-500/25 ring-2 ring-emerald-400'
             : isDropCandidate
@@ -163,9 +147,16 @@ export function EquippedWindow({
         style={{ borderColor: isDropCandidate ? '#34d399' : rInfo.border, background: rInfo.bg }}
       >
         <div className="flex w-full items-center justify-between gap-1">
-          <span className="truncate text-xs font-bold">
-            {it.icon} <RarityName item={it} />{' '}
-            {it.level > 0 && <span className="text-amber-400">+{it.level}</span>}
+          <span className="text-[10px] font-extrabold text-slate-300">
+            {slotDef.label}
+            {meta.axisDef && (
+              <span
+                className="ml-1.5 rounded px-1 py-0.2 text-[9px] font-bold"
+                style={{ color: meta.axisDef.color, background: meta.axisDef.bgTint }}
+              >
+                {meta.axisDef.icon} {meta.axisDef.name}
+              </span>
+            )}
           </span>
           <span className="shrink-0 text-[10px] text-slate-400">
             {isDropCandidate ? (
@@ -173,27 +164,28 @@ export function EquippedWindow({
             ) : (
               <>
                 {it.locked ? '🔒 ' : ''}
-                {sInfo.isFixedCap ? '固定上限' : `St.${it.stage}`}
+                {meta.isFixedCap ? '固定上限' : `St.${it.stage}`}
               </>
             )}
           </span>
         </div>
+        <div className="mt-0.5 flex w-full items-center justify-between gap-1">
+          <span className="truncate text-xs font-bold">
+            {it.icon} <RarityName item={it} />{' '}
+            {it.level > 0 && <span className="text-amber-400">+{it.level}</span>}
+          </span>
+        </div>
         <div className="mt-0.5 flex items-center justify-between gap-1 text-[11px] text-slate-100">
           <span>
-            {sInfo.mainLabel}:{' '}
+            {meta.mainLabel}:{' '}
             <strong>
               +{fmt(getMainStatVal(it))}
-              {sInfo.unit}
+              {meta.unit}
             </strong>{' '}
             {it.rarity === 4 && (
               <span className="mythic-text text-[10px] font-extrabold">[+{MYTHIC_MAX_EQUIP_LEVEL}]</span>
             )}
           </span>
-          {affix && (
-            <span className="shrink-0 rounded bg-fuchsia-500/25 px-1 text-[9px] font-bold text-fuchsia-200">
-              {affix.icon} {affix.label}
-            </span>
-          )}
         </div>
         <div className="mt-0.5 truncate text-[10px] text-slate-400">
           {it.subStats.map((s) => `${SUB_MAP[s.key].label}+${s.val.toFixed(1)}%`).join(' / ')}
@@ -211,12 +203,12 @@ export function EquippedWindow({
       position={position}
       size={windowSize}
       minSize={{ width: 540, height: 500 }}
-      isDropOver={Boolean(draggedItem && hoveredSlot === draggedItem.slot)}
+      isDropOver={Boolean(draggedItem && hoveredSlot && canSlotAccept(hoveredSlot, draggedItem))}
       dropHintText={
         draggedItem
-          ? PERSONAL_SLOTS.includes(draggedItem.slot)
-            ? `⚔️ ドロップして ${memberDef.name} の「${SLOTS[draggedItem.slot].label}」に装備`
-            : `✨ ドロップしてパーティ共有「${SLOTS[draggedItem.slot].label}」に装備`
+          ? draggedItem.slot === 'accessory'
+            ? '💍 アクセ1またはアクセ2にドロップして装着'
+            : `⚔️ ドロップして「${EQUIP_SLOTS[draggedItem.slot].label}」に装備`
           : undefined
       }
       onFocus={onFocus}
@@ -231,32 +223,14 @@ export function EquippedWindow({
       onDrop={handleContainerDrop}
       headerLeft={
         <>
-          <span>🛡️ 装備中</span>
+          <span>🛡️ 装備中 (4枠)</span>
           <span className="inline-flex items-center gap-1 rounded-md border border-sky-400/35 bg-sky-400/10 px-2 py-0.5 text-xs font-bold text-sky-200">
             💎 {fmt(stones)}
           </span>
-          <button
-            type="button"
-            data-testid="btn-auto-equip"
-            disabled={isRollingUpgrade}
-            onClick={() => onAutoEquip(member.id)}
-            title="バッグ内からより強い個人装備・共有遺物を自動で付け替えます"
-            className="rounded-md border border-amber-400/60 bg-amber-600/25 px-2 py-0.5 text-[11px] font-extrabold text-amber-200 transition hover:bg-amber-600/40 disabled:opacity-40"
-          >
-            ⚡ おまかせ装備
-          </button>
         </>
       }
       headerRight={
         <>
-          <button
-            type="button"
-            disabled={isRollingUpgrade}
-            onClick={() => onOpenWindow('party')}
-            className="rounded-md border border-purple-400/60 bg-purple-600/25 px-2 py-1 text-[11px] font-bold text-purple-100 transition hover:bg-purple-600/40 disabled:opacity-40"
-          >
-            👥 編成
-          </button>
           <button
             type="button"
             disabled={isRollingUpgrade}
@@ -285,75 +259,73 @@ export function EquippedWindow({
       }
     >
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-        {/* Top Party Member Switcher Bar */}
-        <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-slate-400/20 bg-slate-900/75 px-2.5 py-1.5">
-          <div className="flex flex-wrap items-center gap-1">
-            {unlockedMembers.map((m) => {
-              const d = JOB_DEFS[m.id];
-              const isSelected = m.id === member.id;
-              const isActive = party.activeIds.includes(m.id);
-              return (
-                <button
-                  key={m.id}
-                  type="button"
-                  data-testid={`equip-member-tab-${m.id}`}
-                  disabled={isRollingUpgrade}
-                  onClick={() => onSelectMember(m.id)}
-                  className={`flex items-center gap-1 rounded-md border px-2 py-1 text-[11px] font-bold transition ${
-                    isSelected
-                      ? 'border-sky-300 bg-sky-500/25 text-white ring-1 ring-sky-400/70'
-                      : 'border-slate-500/35 bg-slate-800/80 text-slate-300 hover:bg-slate-800'
-                  }`}
-                >
-                  <span>{d.icon}</span>
-                  <span>{d.name}</span>
-                  <span className="text-[10px] text-slate-400">Lv.{m.level}</span>
-                  {!isActive && <span className="text-[9px] text-slate-500">(控)</span>}
-                </button>
-              );
-            })}
-          </div>
-          <div className="flex items-center gap-2 text-[11px] text-slate-300">
+        {/* Hero Combat Summary Bar */}
+        <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-slate-400/20 bg-slate-900/75 px-3 py-1.5 text-[11px] text-slate-300">
+          <div className="flex flex-wrap items-center gap-3">
             <span>
-              ATK <strong className="text-white">{fmt(Math.round(memberStats.atk))}</strong>
+              攻撃 <strong className="text-white">{fmt(Math.round(stats.atk))}</strong>
             </span>
             <span>
-              HP <strong className="text-emerald-300">{fmt(memberStats.hp)}</strong>
+              HP <strong className="text-emerald-300">{fmt(stats.hp)}</strong>
             </span>
             <span>
-              会心 <strong className="text-amber-300">{memberStats.critRate.toFixed(0)}%</strong>
+              連撃 <strong className="text-sky-300">{Math.round(stats.multiHitRate)}%</strong>
+            </span>
+            <span>
+              与ダメ <strong className="text-rose-300">+{stats.dmgPct.toFixed(0)}%</strong>
+            </span>
+            <span>
+              会心 <strong className="text-amber-300">{stats.critRate.toFixed(0)}%</strong>
+            </span>
+            <span>
+              会心倍 <strong className="text-amber-200">{Math.round(stats.critDmg)}%</strong>
+            </span>
+            <span>
+              貫通 <strong className="text-purple-300">{Math.round(stats.rawArmorPen)}%</strong>
             </span>
           </div>
+          <span className="text-[10px] text-slate-500">同種アクセ2個積みOK</span>
         </div>
 
-        <div className="grid min-h-0 flex-1 grid-cols-[240px_minmax(0,1fr)] overflow-hidden max-md:flex max-md:flex-col">
-          {/* Desktop Left Column: Personal (2) + Shared Artifacts (4) */}
-          <div className="hidden min-h-0 flex-col gap-1.5 border-r border-slate-400/20 p-2.5 md:flex">
-            <div className="flex flex-1 flex-col gap-1.5 overflow-y-auto pr-0.5">
-              <div className="flex items-center justify-between text-[10px] font-extrabold text-amber-300">
-                <span>👤 {memberDef.name}の個人装備（2枠）</span>
-                <span className="font-normal text-slate-400">D&D可</span>
-              </div>
-              {PERSONAL_SLOTS.map((slotKey) => renderSlotCard(slotKey))}
+        {/* Active 2-Accessory Resonance Combo Banner */}
+        <div
+          data-testid="resonance-combo-banner"
+          className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-slate-400/20 px-3 py-1.5 text-xs"
+          style={{ background: combo.badgeBg }}
+        >
+          <div className="flex items-center gap-2">
+            <span className="text-base leading-none">{combo.icons}</span>
+            <div className="flex flex-wrap items-baseline gap-x-2">
+              <span className="font-extrabold" style={{ color: combo.accentColor }}>
+                共鳴：{combo.name}
+              </span>
+              <span className="text-[11px] text-slate-200">{combo.effectText}</span>
+            </div>
+          </div>
+          <span className="rounded border border-white/15 bg-black/35 px-1.5 py-0.5 text-[10px] font-semibold text-slate-300">
+            演出: {combo.vfxLabel}
+          </span>
+        </div>
 
-              <div className="mt-1 flex items-center justify-between border-t border-white/10 pt-1.5 text-[10px] font-extrabold text-sky-300">
-                <span>✨ パーティ共有遺物（4枠）</span>
-                <span className="font-normal text-slate-400">全員適用</span>
-              </div>
-              {SHARED_ARTIFACT_SLOTS.map((slotKey) => renderSlotCard(slotKey))}
+        <div className="grid min-h-0 flex-1 grid-cols-[248px_minmax(0,1fr)] overflow-hidden max-md:flex max-md:flex-col">
+          {/* Desktop Left Column: 4 Spacious Slot Cards */}
+          <div className="hidden min-h-0 flex-col gap-2 border-r border-slate-400/20 p-2.5 md:flex">
+            <div className="flex flex-1 flex-col gap-2 overflow-y-auto pr-0.5">
+              {EQUIP_SLOT_ORDER.map((slotKey) => renderSlotCard(slotKey))}
             </div>
           </div>
 
-          {/* Mobile Top Compact 6-Slot Selector */}
-          <div className="grid shrink-0 grid-cols-3 gap-1.5 border-b border-slate-400/20 bg-slate-900/60 p-2 max-[420px]:grid-cols-2 md:hidden">
-            {SLOT_ORDER.map((slotKey) => {
-              const it = memberEquipped[slotKey];
-              const sInfo = SLOTS[slotKey];
+          {/* Mobile Top Compact 2x2 Slot Selector */}
+          <div className="grid shrink-0 grid-cols-2 gap-1.5 border-b border-slate-400/20 bg-slate-900/60 p-2 md:hidden">
+            {EQUIP_SLOT_ORDER.map((slotKey) => {
+              const it = equipped[slotKey];
+              const slotDef = EQUIP_SLOTS[slotKey];
+              const meta = getItemMainStatMeta(it);
               const rInfo = RARITIES[it.rarity];
               const selected = selectedSlot === slotKey;
               return (
                 <button
-                  key={`${member.id}-${slotKey}-${it.id}`}
+                  key={`${slotKey}-${it.id}`}
                   type="button"
                   data-mobile-slot-card={slotKey}
                   onClick={() => !isRollingUpgrade && onSelectSlot(slotKey)}
@@ -364,15 +336,15 @@ export function EquippedWindow({
                 >
                   <div className="flex items-center justify-between gap-1 text-[11px] font-bold">
                     <span className="truncate">
-                      {it.icon} {sInfo.label}
+                      {it.icon} {slotDef.shortLabel}
                     </span>
                     <span className="shrink-0 text-[10px] text-amber-400">
                       {it.level > 0 ? `+${it.level}` : 'Lv0'}
                     </span>
                   </div>
                   <div className="mt-0.5 truncate text-[10px] text-slate-200">
-                    {sInfo.mainLabel} +{fmt(getMainStatVal(it))}
-                    {sInfo.unit}
+                    {meta.mainLabel} +{fmt(getMainStatVal(it))}
+                    {meta.unit}
                   </div>
                 </button>
               );
@@ -384,7 +356,7 @@ export function EquippedWindow({
             <ItemDetailPanel
               item={activeItem}
               location="equipped"
-              equippedInSlot={activeItem}
+              equipped={equipped}
               stones={stones}
               isRollingUpgrade={isRollingUpgrade}
               rouletteActiveIdx={rouletteActiveIdx}
@@ -392,7 +364,6 @@ export function EquippedWindow({
               upgradeFeedback={upgradeFeedback}
               emptyMessage="スロットを選択してください。"
               onUpgradeItem={onUpgradeItem}
-              onReforgeSubstat={onReforgeSubstat}
               onToggleLock={onToggleLock}
             />
           </div>

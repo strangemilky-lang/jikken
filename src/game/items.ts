@@ -1,5 +1,14 @@
 import {
+  ACCESSORY_AXES,
+  ACCESSORY_AXIS_ORDER,
+  getAccessoryCombo,
+  getExpectedMultiHitMultiplier,
+  inferAccessoryAxis,
+  type AccessoryAxisDef,
+} from './accessories';
+import {
   BASE_NAMES,
+  EQUIP_SLOT_ORDER,
   HERO_BASE,
   MAX_BAG_SIZE,
   MAX_EQUIP_LEVEL,
@@ -7,25 +16,23 @@ import {
   PREFIXES,
   RARITIES,
   ROLL_TIER_RATIOS,
-  SLOT_ORDER,
-  SLOTS,
   SUB_MAP,
   SUB_POOL,
-  UNIQUE_AFFIX_MAP,
-  UNIQUE_AFFIX_POOL,
 } from './constants';
 import type {
+  AccessoryAxis,
   EquippedSet,
   GameState,
   HeroStats,
   Item,
+  ItemSlot,
+  MainStatType,
   RarityId,
   SalvageBulkMode,
-  SlotKey,
   SortMode,
+  StorageFilter,
   SubStat,
   SubStatKey,
-  UniqueAffix,
 } from './types';
 
 export const uid = () => 'itm_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
@@ -62,6 +69,79 @@ export function formatStatDiff(diff: number, unit: string): { text: string; tone
   return { text: `▼-${formatted}${unit}`, tone: 'down' };
 }
 
+export interface ItemMainStatMeta {
+  slotLabel: string;
+  slotIcon: string;
+  mainType: MainStatType;
+  mainLabel: string;
+  unit: string;
+  isFixedCap: boolean;
+  axisDef: AccessoryAxisDef | null;
+}
+
+export function getItemMainStatMeta(item: Pick<Item, 'slot' | 'accAxis' | 'mainStat'>): ItemMainStatMeta {
+  if (item.slot === 'weapon') {
+    return {
+      slotLabel: '武器',
+      slotIcon: '⚔️',
+      mainType: 'atk',
+      mainLabel: '攻撃力',
+      unit: '',
+      isFixedCap: false,
+      axisDef: null,
+    };
+  }
+  if (item.slot === 'armor') {
+    return {
+      slotLabel: '防具',
+      slotIcon: '🛡️',
+      mainType: 'hp',
+      mainLabel: '最大HP',
+      unit: '',
+      isFixedCap: false,
+      axisDef: null,
+    };
+  }
+  const axis = inferAccessoryAxis(item);
+  const def = ACCESSORY_AXES[axis];
+  return {
+    slotLabel: `アクセ・${def.shortLabel}`,
+    slotIcon: def.icon,
+    mainType: def.mainType,
+    mainLabel: def.mainLabel,
+    unit: def.unit,
+    isFixedCap: true,
+    axisDef: def,
+  };
+}
+
+export function isFixedCapItem(item: Pick<Item, 'slot'>): boolean {
+  return item.slot === 'accessory';
+}
+
+export type DropFeaturedCategory = 'weapon' | 'armor' | AccessoryAxis;
+
+export const DROP_FEATURED_CYCLE: DropFeaturedCategory[] = [
+  'weapon',
+  'armor',
+  'ice',
+  'fire',
+  'lightning',
+  'dark',
+];
+
+export function getStageFeaturedDrop(stage: number): {
+  category: DropFeaturedCategory;
+  label: string;
+  icon: string;
+} {
+  const cat = DROP_FEATURED_CYCLE[(Math.max(1, stage) - 1) % DROP_FEATURED_CYCLE.length];
+  if (cat === 'weapon') return { category: cat, label: '武器', icon: '⚔️' };
+  if (cat === 'armor') return { category: cat, label: '防具', icon: '🛡️' };
+  const def = ACCESSORY_AXES[cat];
+  return { category: cat, label: `${def.name}`, icon: def.icon };
+}
+
 export function rollRarity(stage: number, isBoss: boolean, cleared100: boolean, fromChest = false): RarityId {
   const canMythic = cleared100 || stage >= 101;
   const deepTier = Math.floor(Math.max(0, stage - 1) / 100);
@@ -85,27 +165,17 @@ export function rollRarity(stage: number, isBoss: boolean, cleared100: boolean, 
 export interface GenerateItemOptions {
   stage: number;
   forcedRarity?: RarityId | null;
-  forcedSlot?: SlotKey | null;
+  forcedSlot?: ItemSlot | null;
+  forcedAxis?: AccessoryAxis | null;
   isStarter?: boolean;
   isBoss?: boolean;
   fromChest?: boolean;
   cleared100?: boolean;
 }
 
-const FIXED_ACC_BASE: Record<'ring' | 'necklace' | 'gauntlets' | 'boots', number> = {
-  ring: 6,
-  necklace: 16,
-  gauntlets: 8,
-  boots: 6,
-};
-
-const STARTER_NAMES: Record<SlotKey, string> = {
+const STARTER_NAMES: Record<'weapon' | 'armor', string> = {
   weapon: '見習いの剣',
   armor: '旅人の布服',
-  ring: '銅の指輪',
-  necklace: '木彫りの首飾り',
-  gauntlets: '革の小手',
-  boots: '旅人の靴',
 };
 
 export function generateItem(opts: GenerateItemOptions): Item {
@@ -113,33 +183,56 @@ export function generateItem(opts: GenerateItemOptions): Item {
     stage,
     forcedRarity = null,
     forcedSlot = null,
+    forcedAxis = null,
     isStarter = false,
     isBoss = false,
     fromChest = false,
     cleared100 = false,
   } = opts;
 
-  const featured = SLOT_ORDER[(stage - 1) % SLOT_ORDER.length];
-  const rollSlot = (): SlotKey => {
-    if (Math.random() < 0.5) return featured;
-    const others = SLOT_ORDER.filter((s) => s !== featured);
-    return others[randInt(0, others.length - 1)];
-  };
+  let slot: ItemSlot;
+  let accAxis: AccessoryAxis | undefined;
 
-  const slot = forcedSlot || rollSlot();
+  if (forcedSlot) {
+    slot = forcedSlot;
+    if (slot === 'accessory') {
+      accAxis =
+        forcedAxis ||
+        ACCESSORY_AXIS_ORDER[randInt(0, ACCESSORY_AXIS_ORDER.length - 1)];
+    }
+  } else if (forcedAxis) {
+    slot = 'accessory';
+    accAxis = forcedAxis;
+  } else {
+    const featured = DROP_FEATURED_CYCLE[(Math.max(1, stage) - 1) % DROP_FEATURED_CYCLE.length];
+    const picked =
+      Math.random() < 0.46
+        ? featured
+        : DROP_FEATURED_CYCLE.filter((c) => c !== featured)[randInt(0, DROP_FEATURED_CYCLE.length - 2)];
+    if (picked === 'weapon' || picked === 'armor') {
+      slot = picked;
+    } else {
+      slot = 'accessory';
+      accAxis = picked;
+    }
+  }
+
   const rarity: RarityId = forcedRarity !== null ? forcedRarity : rollRarity(stage, isBoss, cleared100, fromChest);
   const rInfo = RARITIES[rarity];
-  const slotInfo = SLOTS[slot];
-
   const pList = PREFIXES[rarity];
-  const bList = BASE_NAMES[slot];
-  const baseChoice = bList[randInt(0, bList.length - 1)];
-  const name = isStarter
-    ? STARTER_NAMES[slot]
-    : `${pList[randInt(0, pList.length - 1)]}${baseChoice.name}`;
 
+  let name: string;
+  let icon: string;
+  let mainType: MainStatType;
   let mainBase = 10;
+
   if (slot === 'weapon' || slot === 'armor') {
+    const bList = BASE_NAMES[slot];
+    const baseChoice = bList[randInt(0, bList.length - 1)];
+    name = isStarter ? STARTER_NAMES[slot] : `${pList[randInt(0, pList.length - 1)]}${baseChoice.name}`;
+    icon = isStarter ? (slot === 'weapon' ? '⚔️' : '🛡️') : baseChoice.icon;
+    mainType = slot === 'weapon' ? 'atk' : 'hp';
+
     const tierStage = getEquipTierStage(stage);
     const stagePow = Math.pow(1.14, tierStage - 1);
     const variance = isStarter ? 1.0 : rand(0.9, 1.16);
@@ -149,12 +242,19 @@ export function generateItem(opts: GenerateItemOptions): Item {
       mainBase = Math.max(30, Math.round(55 * stagePow * rInfo.mainMult * variance));
     }
   } else {
+    const axis = accAxis ?? 'fire';
+    accAxis = axis;
+    const axisDef = ACCESSORY_AXES[axis];
+    const baseChoice = axisDef.baseNames[randInt(0, axisDef.baseNames.length - 1)];
+    name = isStarter ? axisDef.starterName : `${pList[randInt(0, pList.length - 1)]}${baseChoice.name}`;
+    icon = isStarter ? axisDef.icon : baseChoice.icon;
+    mainType = axisDef.mainType;
+
     // 固定上限アクセサリー（階層インフレなし：全階層で理論値共通）
-    const accBase = FIXED_ACC_BASE[slot];
     const rollRatio = isStarter
       ? 0.8
       : ROLL_TIER_RATIOS[Math.floor(Math.random() * ROLL_TIER_RATIOS.length)];
-    mainBase = Math.max(3, Math.round(accBase * rInfo.mainMult * (0.85 + rollRatio * 0.25)));
+    mainBase = Math.max(3, Math.round(axisDef.base * rInfo.mainMult * (0.85 + rollRatio * 0.25)));
   }
 
   const subCount = Math.min(MAX_SUBSTAT_COUNT, rInfo.initSubs);
@@ -174,28 +274,12 @@ export function generateItem(opts: GenerateItemOptions): Item {
     };
   });
 
-  let uniqueAffix: UniqueAffix | null = null;
-  if (!isStarter) {
-    const affixChance = rarity === 4 ? 1.0 : rarity === 3 ? 0.7 : rarity === 2 ? 0.3 : 0;
-    if (affixChance > 0 && Math.random() < affixChance) {
-      const slotDefs = UNIQUE_AFFIX_POOL.filter((d) => d.slots.includes(slot));
-      const pool = slotDefs.length > 0 ? slotDefs : UNIQUE_AFFIX_POOL;
-      const pickedDef = pool[Math.floor(Math.random() * pool.length)];
-      const tierRatio = ROLL_TIER_RATIOS[Math.floor(Math.random() * ROLL_TIER_RATIOS.length)];
-      const rarScale = rarity === 4 ? 1.08 : rarity === 3 ? 1.0 : 0.85;
-      const val = Math.max(
-        pickedDef.min,
-        Math.round((pickedDef.min + (pickedDef.max - pickedDef.min) * tierRatio) * rarScale),
-      );
-      uniqueAffix = { key: pickedDef.key, val };
-    }
-  }
-
   return {
     id: uid(),
     slot,
+    ...(slot === 'accessory' ? { accAxis } : {}),
     name,
-    icon: isStarter ? slotInfo.icon : baseChoice.icon,
+    icon,
     rarity,
     stage,
     level: 0,
@@ -203,82 +287,11 @@ export function generateItem(opts: GenerateItemOptions): Item {
     spentStones: 0,
     createdAt: Date.now(),
     mainStat: {
-      type: slotInfo.mainType,
+      type: mainType,
       base: mainBase,
     },
     subStats,
-    uniqueAffix,
-    reforgedSubIdx: null,
-    reforgeCount: 0,
   };
-}
-
-export function getItemRollQuality(item: Item): { pct: number; grade: 'S' | 'A' | 'B' | 'C' } {
-  const rInfo = RARITIES[item.rarity];
-  if (!item.subStats.length) return { pct: 70, grade: 'B' };
-  let sumRatio = 0;
-  for (const sub of item.subStats) {
-    const def = SUB_MAP[sub.key];
-    if (!def) continue;
-    const expectedMin = def.min * rInfo.subMult * (1 + sub.boosts * 0.63);
-    const expectedMax = def.max * rInfo.subMult * (1 + sub.boosts * 0.9);
-    const norm = expectedMax > expectedMin ? (sub.val - expectedMin) / (expectedMax - expectedMin) : 0.7;
-    sumRatio += clamp(norm, 0, 1);
-  }
-  let pct = Math.round(62 + (sumRatio / item.subStats.length) * 34);
-  if (item.uniqueAffix) {
-    const def = UNIQUE_AFFIX_MAP[item.uniqueAffix.key];
-    if (def) {
-      const aNorm = clamp((item.uniqueAffix.val - def.min) / Math.max(1, def.max - def.min), 0, 1);
-      pct = Math.min(100, pct + Math.round(2 + aNorm * 4));
-    }
-  }
-  pct = clamp(pct, 50, 100);
-  const grade: 'S' | 'A' | 'B' | 'C' = pct >= 90 ? 'S' : pct >= 80 ? 'A' : pct >= 70 ? 'B' : 'C';
-  return { pct, grade };
-}
-
-export function getReforgeCost(item: Item): number {
-  const count = item.reforgeCount ?? 0;
-  const base = SLOTS[item.slot].isFixedCap
-    ? 14 + item.rarity * 12
-    : 8 + Math.round(item.stage * 1.8) + item.rarity * 10;
-  return Math.max(8, Math.round(base * (1 + count * 0.45)));
-}
-
-export function reforgeItemSubstat(
-  item: Item,
-  subIdx: number,
-  rng: () => number = Math.random,
-): { newSub: SubStat; label: string; unit: string } | null {
-  if (subIdx < 0 || subIdx >= item.subStats.length) return null;
-  if (item.reforgedSubIdx !== null && item.reforgedSubIdx !== undefined && item.reforgedSubIdx !== subIdx) {
-    return null;
-  }
-  const rInfo = RARITIES[item.rarity];
-  const current = item.subStats[subIdx];
-  const otherKeys = new Set<SubStatKey>(
-    item.subStats.filter((_, i) => i !== subIdx).map((s) => s.key),
-  );
-  const candidates = SUB_POOL.filter((d) => !otherKeys.has(d.key) && d.key !== current.key);
-  const pool = candidates.length > 0 ? candidates : SUB_POOL.filter((d) => !otherKeys.has(d.key));
-  const pickedDef = pool[Math.floor(rng() * pool.length)] ?? SUB_POOL[0];
-  const tierRatio = ROLL_TIER_RATIOS[Math.floor(rng() * ROLL_TIER_RATIOS.length)];
-  const baseRoll = (pickedDef.min + (pickedDef.max - pickedDef.min) * tierRatio) * rInfo.subMult;
-  let totalVal = baseRoll;
-  for (let b = 0; b < (current.boosts || 0); b++) {
-    const bRatio = ROLL_TIER_RATIOS[Math.floor(rng() * ROLL_TIER_RATIOS.length)];
-    totalVal += (pickedDef.min + (pickedDef.max - pickedDef.min) * bRatio) * rInfo.subMult * 0.9;
-  }
-  const newSub: SubStat = {
-    key: pickedDef.key,
-    val: +totalVal.toFixed(1),
-    boosts: current.boosts || 0,
-  };
-  item.subStats[subIdx] = newSub;
-  item.reforgedSubIdx = subIdx;
-  item.reforgeCount = (item.reforgeCount ?? 0) + 1;
-  return { newSub, label: pickedDef.label, unit: pickedDef.unit };
 }
 
 export function getMaxEquipLevel(item: Pick<Item, 'rarity'> | null | undefined): number {
@@ -296,8 +309,7 @@ export function getMainStatVal(item: Item | null | undefined): number {
 }
 
 export function getUpgradeCost(item: Item): number {
-  const slotInfo = SLOTS[item.slot];
-  if (slotInfo.isFixedCap) {
+  if (isFixedCapItem(item)) {
     // 固定上限アクセは階層によらずレア度・強化Lvのみでコスト決定（+20以降は高騰）
     const overMult = item.level >= MAX_EQUIP_LEVEL ? (item.level - MAX_EQUIP_LEVEL + 1) * 0.95 : 0;
     return Math.max(4, Math.round((8 + item.rarity * 7) * (1 + item.level * 0.45 + overMult)));
@@ -308,8 +320,7 @@ export function getUpgradeCost(item: Item): number {
 
 export function getSalvageValue(item: Item, bonusPct = 0): number {
   const rInfo = RARITIES[item.rarity];
-  const slotInfo = SLOTS[item.slot];
-  const baseDust = slotInfo.isFixedCap
+  const baseDust = isFixedCapItem(item)
     ? rInfo.dustBase + Math.round(item.rarity * 8)
     : rInfo.dustBase + Math.round(item.stage * (1.2 + item.rarity * 1.6));
   const refund = Math.round((item.spentStones || 0) * 0.6);
@@ -320,34 +331,40 @@ export function getSalvageValue(item: Item, bonusPct = 0): number {
 export function calcHeroStats(equipSet: EquippedSet, cleared100: boolean): HeroStats {
   let flatAtk = HERO_BASE.atk;
   let flatHp = HERO_BASE.hp;
+  let multiHitRate = 0;
   let critRate = HERO_BASE.critRate;
   let critDmg = HERO_BASE.critDmg;
   let atkPct = 0;
   let dmgPct = 0;
-  let armorPen = 0;
+  let rawArmorPen = 0;
   let bossDmg = 0;
   let mythicCount = 0;
 
-  for (const key of SLOT_ORDER) {
+  for (const key of EQUIP_SLOT_ORDER) {
     const it = equipSet[key];
     if (!it) continue;
     if (it.rarity === 4) mythicCount++;
     const mVal = getMainStatVal(it);
     if (it.mainStat.type === 'atk') flatAtk += mVal;
     else if (it.mainStat.type === 'hp') flatHp += mVal;
-    else if (it.mainStat.type === 'critRate') critRate += mVal;
-    else if (it.mainStat.type === 'critDmg') critDmg += mVal;
-    else if (it.mainStat.type === 'atkPct') atkPct += mVal;
+    else if (it.mainStat.type === 'multiHitRate') multiHitRate += mVal;
     else if (it.mainStat.type === 'dmgPct') dmgPct += mVal;
+    else if (it.mainStat.type === 'critRate') critRate += mVal;
+    else if (it.mainStat.type === 'armorPen') rawArmorPen += mVal;
 
     for (const sub of it.subStats) {
       if (sub.key === 'atkPct') atkPct += sub.val;
       else if (sub.key === 'critRate') critRate += sub.val;
       else if (sub.key === 'critDmg') critDmg += sub.val;
       else if (sub.key === 'dmgPct') dmgPct += sub.val;
-      else if (sub.key === 'armorPen') armorPen += sub.val;
+      else if (sub.key === 'armorPen') rawArmorPen += sub.val;
       else if (sub.key === 'bossDmg') bossDmg += sub.val;
     }
+  }
+
+  const combo = getAccessoryCombo(equipSet.acc1, equipSet.acc2);
+  if (combo.id === 'lightning+lightning') {
+    critDmg += 22;
   }
 
   const totalAtk = Math.max(1, flatAtk * (1 + atkPct / 100));
@@ -356,6 +373,7 @@ export function calcHeroStats(equipSet: EquippedSet, cleared100: boolean): HeroS
   const maxCritCap = cleared100 ? 300 : 100;
   const finalCritRate = clamp(critRate, 0, maxCritCap);
   const finalCritDmg = Math.max(100, critDmg);
+  const armorPen = Math.min(100, rawArmorPen);
 
   const c = finalCritDmg / 100;
   let critExpectedMult = 1;
@@ -367,17 +385,21 @@ export function calcHeroStats(equipSet: EquippedSet, cleared100: boolean): HeroS
     critExpectedMult = c * (2.0 + (Math.min(finalCritRate - 200, 100) / 100) * 2.0);
   }
 
-  const offlinePower = totalAtk * (1 + dmgPct / 100) * critExpectedMult;
+  const expectedMultiHit = getExpectedMultiHitMultiplier(multiHitRate, combo.id);
+  const offlinePower = totalAtk * (1 + dmgPct / 100) * critExpectedMult * expectedMultiHit;
 
   return {
     atk: totalAtk,
     hp: totalHp,
+    multiHitRate,
     critRate: finalCritRate,
     critDmg: finalCritDmg,
     dmgPct,
-    armorPen: Math.min(100, armorPen),
+    armorPen,
+    rawArmorPen,
     bossDmg,
     mythicCount,
+    comboId: combo.id,
     offlinePower,
   };
 }
@@ -501,10 +523,10 @@ export function partitionBulkSalvage(
     else if (mode === 'epic') shouldSalvage = item.rarity <= 2;
     else if (mode === 'weaker') {
       // 型落ち武器・防具のみ安全に対象化（固定上限アクセは分解しない）
-      if (SLOTS[item.slot].isFixedCap) {
+      if (isFixedCapItem(item)) {
         shouldSalvage = false;
       } else {
-        const eq = equipped[item.slot];
+        const eq = item.slot === 'weapon' ? equipped.weapon : equipped.armor;
         if (getMainStatVal(item) >= getMainStatVal(eq) || item.rarity > eq.rarity) {
           protectedCount++;
           shouldSalvage = false;
@@ -545,12 +567,20 @@ export function commitChestItemToState(
   return { salvagedDust: 0, bagFull: false };
 }
 
+export function matchesStorageFilter(item: Item, filter: StorageFilter): boolean {
+  if (filter === 'all') return true;
+  if (filter === 'weapon' || filter === 'armor' || filter === 'accessory') {
+    return item.slot === filter;
+  }
+  return item.slot === 'accessory' && inferAccessoryAxis(item) === filter;
+}
+
 export function filterAndSortStorageItems(
   items: Item[],
-  filterSlot: 'all' | SlotKey,
+  filterSlot: StorageFilter,
   sortMode: SortMode,
 ): Item[] {
-  const filtered = items.filter((it) => filterSlot === 'all' || it.slot === filterSlot);
+  const filtered = items.filter((it) => matchesStorageFilter(it, filterSlot));
   if (sortMode === 'rarity') {
     return [...filtered].sort((a, b) => b.rarity - a.rarity || b.stage - a.stage);
   }

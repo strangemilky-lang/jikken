@@ -1,6 +1,6 @@
-import { CHEST_BATCH_MAX, PERSONAL_SLOTS, RARITIES, SLOTS, SUB_MAP, UNIQUE_AFFIX_MAP } from '../game/constants';
-import { fmt, getMainStatVal } from '../game/items';
-import type { GachaPullResult } from '../game/types';
+import { CHEST_BATCH_MAX, RARITIES, SUB_MAP } from '../game/constants';
+import { fmt, getItemMainStatMeta, getMainStatVal } from '../game/items';
+import type { EquipSlotKey, GachaPullResult } from '../game/types';
 import { PixelSpriteIcon } from './PixelSpriteIcon';
 import { RarityName } from './RarityName';
 
@@ -9,13 +9,12 @@ interface ChestModalProps {
   chests: number;
   mythicChests: number;
   maxStage: number;
-  targetMemberName?: string;
   autoSalvageChecked: boolean;
   isOpening: boolean;
   results: GachaPullResult[];
   onToggleAutoSalvage: (checked: boolean) => void;
   onPull: (count: number, isMythic: boolean) => void;
-  onEquipFromResult: (resultId: string, itemId: string) => void;
+  onEquipFromResult: (resultId: string, itemId: string, targetSlot?: EquipSlotKey) => void;
   onClose: () => void;
 }
 
@@ -24,7 +23,6 @@ export function ChestModal({
   chests,
   mythicChests,
   maxStage,
-  targetMemberName,
   autoSalvageChecked,
   isOpening,
   results,
@@ -139,7 +137,7 @@ export function ChestModal({
             results.map((res) => {
               const it = res.item;
               const rInfo = RARITIES[it.rarity];
-              const sInfo = SLOTS[it.slot];
+              const meta = getItemMainStatMeta(it);
 
               if (res.phase === 'waiting') {
                 return (
@@ -182,8 +180,6 @@ export function ChestModal({
 
               const isHighRarity = it.rarity >= 3;
               const isMythic = it.rarity === 4;
-              const affix = it.uniqueAffix ? UNIQUE_AFFIX_MAP[it.uniqueAffix.key] : null;
-              const isPersonal = PERSONAL_SLOTS.includes(it.slot);
 
               return (
                 <div
@@ -228,22 +224,15 @@ export function ChestModal({
                       )}
                     </div>
                     <span className="text-slate-400">
-                      {sInfo.isFixedCap ? '固定上限' : `St.${it.stage}`}
+                      {meta.isFixedCap ? '固定上限' : `St.${it.stage}`}
                     </span>
                   </div>
 
                   <div className="relative z-10 truncate text-xs font-extrabold">
                     {it.icon} <RarityName item={it} />
                   </div>
-                  <div className="relative z-10 flex items-center justify-between gap-1 text-[11px] text-slate-200">
-                    <span>
-                      {sInfo.mainLabel} +{fmt(getMainStatVal(it))}{sInfo.unit}
-                    </span>
-                    {affix && (
-                      <span className="shrink-0 rounded bg-fuchsia-500/25 px-1 text-[9px] font-bold text-fuchsia-200">
-                        {affix.icon}{affix.label}
-                      </span>
-                    )}
+                  <div className="relative z-10 text-[11px] text-slate-200">
+                    {meta.mainLabel} +{fmt(getMainStatVal(it))}{meta.unit}
                   </div>
                   <div className="relative z-10 truncate text-[10px] text-slate-400">
                     {it.subStats.map((s) => SUB_MAP[s.key].label).join(' / ')}
@@ -255,20 +244,37 @@ export function ChestModal({
                   ) : (
                     <div className="relative z-10 mt-0.5 flex items-center justify-between gap-1">
                       <span className="text-[10px] text-slate-400">
-                        {sInfo.label} · {it.subStats.length}オプ
+                        {meta.slotLabel} · {it.subStats.length}オプ
                       </span>
-                      <button
-                        type="button"
-                        disabled={res.equippedFromModal}
-                        onClick={() => onEquipFromResult(res.id, it.id)}
-                        className="rounded border border-blue-400/70 bg-blue-600 px-2 py-0.5 text-[11px] font-semibold text-white transition hover:bg-blue-500 disabled:opacity-45"
-                      >
-                        {res.equippedFromModal
-                          ? '装備済'
-                          : isPersonal && targetMemberName
-                            ? `${targetMemberName}へ`
-                            : '装備'}
-                      </button>
+                      {it.slot === 'accessory' ? (
+                        <div className="flex items-center gap-1">
+                          <button
+                            type="button"
+                            disabled={res.equippedFromModal}
+                            onClick={() => onEquipFromResult(res.id, it.id, 'acc1')}
+                            className="rounded border border-blue-400/70 bg-blue-600 px-1.5 py-0.5 text-[10px] font-bold text-white transition hover:bg-blue-500 disabled:opacity-45"
+                          >
+                            {res.equippedFromModal ? '済' : '枠1'}
+                          </button>
+                          <button
+                            type="button"
+                            disabled={res.equippedFromModal}
+                            onClick={() => onEquipFromResult(res.id, it.id, 'acc2')}
+                            className="rounded border border-indigo-400/70 bg-indigo-600 px-1.5 py-0.5 text-[10px] font-bold text-white transition hover:bg-indigo-500 disabled:opacity-45"
+                          >
+                            {res.equippedFromModal ? '済' : '枠2'}
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          type="button"
+                          disabled={res.equippedFromModal}
+                          onClick={() => onEquipFromResult(res.id, it.id)}
+                          className="rounded border border-blue-400/70 bg-blue-600 px-2 py-0.5 text-[11px] font-semibold text-white transition hover:bg-blue-500 disabled:opacity-45"
+                        >
+                          {res.equippedFromModal ? '装備済' : '装備'}
+                        </button>
+                      )}
                     </div>
                   )}
                 </div>

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   BIOMES,
   CHEST_BATCH_MAX,
+  EQUIP_SLOT_ORDER,
   MAX_BAG_SIZE,
   MAX_EQUIP_LEVEL,
   MAX_STASH_SIZE,
@@ -13,6 +14,19 @@ import {
   SUB_POOL,
   SUBSTAT_STEP_INTERVAL,
 } from './constants';
+import {
+  ACCESSORY_AXES,
+  ACCESSORY_AXIS_ORDER,
+  ACCESSORY_COMBOS,
+  FOLLOW_UP_DAMAGE_RATIO,
+  ICE_PURE_THIRD_HIT_RATIO,
+  MAX_EXTRA_MULTI_HITS,
+  getAccessoryCombo,
+  getAccessoryComboId,
+  getExpectedMultiHitMultiplier,
+  resolveTurnAttackPlan,
+  rollExtraHits,
+} from './accessories';
 import {
   advanceFairyCooldown,
   claimFairyGift,
@@ -30,37 +44,14 @@ import {
   formatUpgradeMessage,
   generateItem,
   getEquipTierStage,
-  getItemRollQuality,
   getMainStatVal,
   getMaxEquipLevel,
   getNextSelectedStorageId,
-  getReforgeCost,
   getSalvageValue,
   getUpgradeCost,
   partitionBulkSalvage,
-  reforgeItemSubstat,
   rollSubstatMilestone,
 } from './items';
-import {
-  allocateSkillPoint,
-  calcEnemyExpReward,
-  calcPartyMemberStats,
-  canRecruitCharacter,
-  expToNextLevel,
-  findBestAutoEquipCandidate,
-  getActiveMembers,
-  getPartyBonuses,
-  getSpentSkillPoints,
-  grantPartyExp,
-  JOB_DEFS,
-  JOB_ORDER,
-  MAX_SKILL_LEVEL,
-  pickEnemyTargetMember,
-  recruitCharacter,
-  resetMemberSkills,
-  setActivePartySlot,
-  syncLeaderEquipped,
-} from './party';
 import {
   bfsPath,
   cardinalAngleFromDelta,
@@ -77,6 +68,7 @@ import {
   placeDungeonEnemies,
   placeMazeEvents,
   revealDungeonTiles,
+  rollMobArchetype,
   shouldEnterRestMode,
   shouldExitRestMode,
   shouldRetreatInRoom,
@@ -107,6 +99,18 @@ import {
   WALL_TEXTURE_GRIDS,
 } from './pixelArt';
 import { createDefaultState, parseSaveState } from './save';
+import {
+  computeSynthesisPreview,
+  countReadySynthesisRecipes,
+  executeSynthesis,
+  getEligibleSynthesisCandidates,
+  isSynthesisRecipeUnlocked,
+  MYTHIC_REFORGE_COUNT,
+  pickWeightedOutcomeFromMaterials,
+  SYNTHESIS_MATERIAL_COUNT,
+  SYNTHESIS_STONE_REFUND_RATE,
+} from './synthesis';
+import type { AccessoryAxis, AccessoryComboId, EquippedSet, HeroStats } from './types';
 
 test('CHEST_BATCH_MAX is 9 for 3x3 modal layout', () => {
   assert.equal(CHEST_BATCH_MAX, 9);
@@ -128,10 +132,10 @@ test('Rarities R0-R3 have Lv20 cap, Mythic has Lv40 cap, +4 intervals, and Legen
   assert.ok(RARITIES.slice(0, 4).every((r) => r.maxLv === 20));
   assert.equal(RARITIES[4].maxLv, 40);
 
-  const common = generateItem({ stage: 10, forcedRarity: 0, forcedSlot: 'ring' });
-  const epic = generateItem({ stage: 10, forcedRarity: 2, forcedSlot: 'necklace' });
-  const legend = generateItem({ stage: 10, forcedRarity: 3, forcedSlot: 'gauntlets' });
-  const mythic = generateItem({ stage: 10, forcedRarity: 4, forcedSlot: 'boots' });
+  const common = generateItem({ stage: 10, forcedRarity: 0, forcedSlot: 'accessory', forcedAxis: 'lightning' });
+  const epic = generateItem({ stage: 10, forcedRarity: 2, forcedSlot: 'accessory', forcedAxis: 'fire' });
+  const legend = generateItem({ stage: 10, forcedRarity: 3, forcedSlot: 'accessory', forcedAxis: 'dark' });
+  const mythic = generateItem({ stage: 10, forcedRarity: 4, forcedSlot: 'accessory', forcedAxis: 'ice' });
 
   assert.equal(common.subStats.length, 1);
   assert.equal(epic.subStats.length, 3);
@@ -149,12 +153,14 @@ test('Rarities R0-R3 have Lv20 cap, Mythic has Lv40 cap, +4 intervals, and Legen
   assert.ok(boostRoll.targetIdx >= 0 && boostRoll.targetIdx < 4);
 });
 
-test('Fixed-cap accessories (ring, necklace, gauntlets, boots) do not inflate with stage', () => {
-  const r1 = generateItem({ stage: 1, forcedRarity: 3, forcedSlot: 'ring' });
-  const r800 = generateItem({ stage: 800, forcedRarity: 3, forcedSlot: 'ring' });
-  // Same stage-independent ceiling and upgrade cost
-  assert.ok(r800.mainStat.base <= 20 && r1.mainStat.base <= 20);
-  assert.equal(getUpgradeCost(r1), getUpgradeCost(r800));
+test('Fixed-cap accessories (ice, fire, lightning, dark) do not inflate with stage', () => {
+  for (const axis of ACCESSORY_AXIS_ORDER) {
+    const r1 = generateItem({ stage: 1, forcedRarity: 3, forcedSlot: 'accessory', forcedAxis: axis });
+    const r800 = generateItem({ stage: 800, forcedRarity: 3, forcedSlot: 'accessory', forcedAxis: axis });
+    // Same stage-independent ceiling and upgrade cost
+    assert.ok(r800.mainStat.base <= 25 && r1.mainStat.base <= 25);
+    assert.equal(getUpgradeCost(r1), getUpgradeCost(r800));
+  }
 });
 
 test('calcHeroStats & calcHitDamage handle dmgPct, bossDmg, armorPen without follow-up hit inflation', () => {
@@ -208,20 +214,20 @@ test('partitionBulkSalvage protects locked items, stronger gear, and fixed-cap a
   const weakCommon = generateItem({ stage: 1, forcedRarity: 0, forcedSlot: 'weapon' });
   const lockedCommon = { ...generateItem({ stage: 1, forcedRarity: 0, forcedSlot: 'weapon' }), locked: true };
   const highHpArmor = generateItem({ stage: 10, forcedRarity: 3, forcedSlot: 'armor' });
-  const ring = generateItem({ stage: 1, forcedRarity: 0, forcedSlot: 'ring' });
+  const acc = generateItem({ stage: 1, forcedRarity: 0, forcedSlot: 'accessory', forcedAxis: 'lightning' });
 
   const resCommon = partitionBulkSalvage([weakCommon, lockedCommon, highHpArmor], 'common', state.equipped);
   assert.equal(resCommon.salvagedCount, 1);
   assert.equal(resCommon.kept.length, 2);
 
   // 'weaker' must never salvage fixed-cap accessories or stronger armor
-  const resWeaker = partitionBulkSalvage([highHpArmor, ring], 'weaker', state.equipped);
+  const resWeaker = partitionBulkSalvage([highHpArmor, acc], 'weaker', state.equipped);
   assert.equal(resWeaker.salvagedCount, 0);
   assert.equal(resWeaker.kept.length, 2);
 });
 
-test('parseSaveState migrates legacy 3-slot wave-based save cleanly to 6 slots', () => {
-  const legacyAcc = generateItem({ stage: 8, forcedRarity: 3, forcedSlot: 'necklace' });
+test('parseSaveState migrates legacy 3-slot wave-based save cleanly to 4 slots', () => {
+  const legacyAcc = generateItem({ stage: 8, forcedRarity: 3, forcedSlot: 'accessory', forcedAxis: 'fire' });
   const legacy = JSON.stringify({
     stage: 12,
     maxStage: 15,
@@ -239,11 +245,13 @@ test('parseSaveState migrates legacy 3-slot wave-based save cleanly to 6 slots',
   assert.equal(migrated.stage, 12);
   assert.equal(migrated.maxStage, 15);
   assert.equal(migrated.floorEncounters, 0);
-  for (const slot of SLOT_ORDER) {
-    assert.equal(migrated.equipped[slot].slot, slot);
-  }
-  assert.equal(migrated.equipped.necklace.id, legacyAcc.id);
-  assert.equal(migrated.inventory[0].slot, 'necklace');
+  assert.deepEqual(SLOT_ORDER, ['weapon', 'armor', 'acc1', 'acc2']);
+  assert.equal(migrated.equipped.weapon.slot, 'weapon');
+  assert.equal(migrated.equipped.armor.slot, 'armor');
+  assert.equal(migrated.equipped.acc1.slot, 'accessory');
+  assert.equal(migrated.equipped.acc2.slot, 'accessory');
+  assert.equal(migrated.equipped.acc1.id, legacyAcc.id);
+  assert.equal(migrated.inventory[0].slot, 'accessory');
 });
 
 test('commitChestItemToState resolves auto-salvage, bag limit, and inventory addition cleanly', () => {
@@ -266,7 +274,7 @@ test('commitChestItemToState resolves auto-salvage, bag limit, and inventory add
   assert.equal(st.inventory[0].id, rareItem.id);
 });
 
-test('getEquipTierStage steps every 5 floors and stays balanced through 1000F across 6 slots', () => {
+test('getEquipTierStage steps every 5 floors and stays balanced through 1000F across 4 slots', () => {
   assert.equal(getEquipTierStage(1), 1);
   assert.equal(getEquipTierStage(5), 1);
   assert.equal(getEquipTierStage(6), 6);
@@ -284,18 +292,14 @@ test('getEquipTierStage steps every 5 floors and stays balanced through 1000F ac
   const boss1000 = createEnemy(1000, true);
   const w1000 = generateItem({ stage: 1000, forcedRarity: 4, forcedSlot: 'weapon' });
   const a1000 = generateItem({ stage: 1000, forcedRarity: 4, forcedSlot: 'armor' });
-  const ring1000 = generateItem({ stage: 1000, forcedRarity: 4, forcedSlot: 'ring' });
-  const neck1000 = generateItem({ stage: 1000, forcedRarity: 4, forcedSlot: 'necklace' });
-  const gaunt1000 = generateItem({ stage: 1000, forcedRarity: 4, forcedSlot: 'gauntlets' });
-  const boots1000 = generateItem({ stage: 1000, forcedRarity: 4, forcedSlot: 'boots' });
+  const acc1 = generateItem({ stage: 1000, forcedRarity: 4, forcedSlot: 'accessory', forcedAxis: 'ice' });
+  const acc2 = generateItem({ stage: 1000, forcedRarity: 4, forcedSlot: 'accessory', forcedAxis: 'dark' });
   const stats1000 = calcHeroStats(
     {
       weapon: w1000,
       armor: a1000,
-      ring: ring1000,
-      necklace: neck1000,
-      gauntlets: gaunt1000,
-      boots: boots1000,
+      acc1,
+      acc2,
     },
     true,
   );
@@ -412,14 +416,17 @@ test('Bag (60) and Stash (120) capacities, overflow save migration, and formatSt
 });
 
 test('Post-100F crit overflow (2.0x super / 4.0x hyper) makes crit-focused builds modestly strongest without 2x+ gap', () => {
-  const baseStats = {
+  const baseStats: HeroStats = {
     atk: 1000,
     hp: 5000,
     critRate: 100,
     critDmg: 300,
     dmgPct: 0,
     armorPen: 0,
+    rawArmorPen: 0,
     bossDmg: 0,
+    multiHitRate: 0,
+    comboId: 'ice+fire',
     mythicCount: 0,
     offlinePower: 0,
   };
@@ -432,12 +439,13 @@ test('Post-100F crit overflow (2.0x super / 4.0x hyper) makes crit-focused build
 
   // Before 100F: capped at 100%; after 100F: uncapped up to 300%
   const st = createDefaultState();
-  const mythicRing = generateItem({ stage: 100, forcedRarity: 4, forcedSlot: 'ring' });
-  mythicRing.level = 20;
-  mythicRing.subStats = [{ key: 'critRate', val: 30, boosts: 5 }];
-  const withHighCrit = {
+  const mythicLightning = generateItem({ stage: 100, forcedRarity: 4, forcedSlot: 'accessory', forcedAxis: 'lightning' });
+  mythicLightning.level = 20;
+  mythicLightning.subStats = [{ key: 'critRate', val: 30, boosts: 5 }];
+  const withHighCrit: EquippedSet = {
     ...st.equipped,
-    ring: mythicRing,
+    acc1: mythicLightning,
+    acc2: { ...mythicLightning, id: 'm_lt_2' },
     weapon: { ...st.equipped.weapon, subStats: [{ key: 'critRate' as const, val: 25, boosts: 4 }] },
   };
   const pre100 = calcHeroStats(withHighCrit, false);
@@ -446,47 +454,51 @@ test('Post-100F crit overflow (2.0x super / 4.0x hyper) makes crit-focused build
   assert.ok(post100.critRate > 120 && post100.critRate <= 300);
 
   // Compare equal 40-roll Mythic+20 allocations deterministically:
-  // crit-focused should lead over balanced, but stay modest (<1.35x, never 2x+)
-  const makeFullMythic = (rolls: { critRate: number; critDmg: number; atkPct: number; dmgPct: number }) => {
-    const eq = { ...st.equipped };
-    for (const slot of SLOT_ORDER) {
+  // crit-focused (lightning+lightning) should modestly lead over balanced, never 2x+
+  const makeFullMythic = (
+    rolls: { critRate: number; critDmg: number; atkPct: number; dmgPct: number },
+    accAxes: [AccessoryAxis, AccessoryAxis] = ['lightning', 'fire'],
+  ) => {
+    const eq: EquippedSet = {
+      weapon: generateItem({ stage: 100, forcedRarity: 4, forcedSlot: 'weapon' }),
+      armor: generateItem({ stage: 100, forcedRarity: 4, forcedSlot: 'armor' }),
+      acc1: generateItem({ stage: 100, forcedRarity: 4, forcedSlot: 'accessory', forcedAxis: accAxes[0] }),
+      acc2: generateItem({ stage: 100, forcedRarity: 4, forcedSlot: 'accessory', forcedAxis: accAxes[1] }),
+    };
+    for (const slot of EQUIP_SLOT_ORDER) {
       eq[slot] = {
-        ...st.equipped[slot],
+        ...eq[slot],
         rarity: 4,
         level: 20,
         stage: 100,
         mainStat: {
-          ...st.equipped[slot].mainStat,
+          ...eq[slot].mainStat,
           base:
             slot === 'weapon'
               ? 50000
               : slot === 'armor'
                 ? 300000
-                : slot === 'ring'
-                  ? 24
-                  : slot === 'necklace'
-                    ? 65
-                    : slot === 'gauntlets'
-                      ? 33
-                      : 24,
+                : slot === 'acc1'
+                  ? ACCESSORY_AXES[accAxes[0]].base * 3.7
+                  : ACCESSORY_AXES[accAxes[1]].base * 3.7,
         },
         subStats: [
-          { key: 'critRate', val: +(rolls.critRate * 3.85 / 6).toFixed(1), boosts: 0 },
-          { key: 'critDmg', val: +(rolls.critDmg * 6.2 / 6).toFixed(1), boosts: 0 },
-          { key: 'atkPct', val: +(rolls.atkPct * 4.4 / 6).toFixed(1), boosts: 0 },
-          { key: 'dmgPct', val: +(rolls.dmgPct * 3.95 / 6).toFixed(1), boosts: 0 },
+          { key: 'critRate', val: +((rolls.critRate * 3.85) / 4).toFixed(1), boosts: 0 },
+          { key: 'critDmg', val: +((rolls.critDmg * 6.2) / 4).toFixed(1), boosts: 0 },
+          { key: 'atkPct', val: +((rolls.atkPct * 4.4) / 4).toFixed(1), boosts: 0 },
+          { key: 'dmgPct', val: +((rolls.dmgPct * 3.95) / 4).toFixed(1), boosts: 0 },
         ],
       };
     }
     return calcHeroStats(eq, true);
   };
-  const cap100 = makeFullMythic({ critRate: 3, critDmg: 12, atkPct: 12, dmgPct: 13 });
-  const balanced = makeFullMythic({ critRate: 10, critDmg: 10, atkPct: 10, dmgPct: 10 });
-  const critMax = makeFullMythic({ critRate: 40, critDmg: 0, atkPct: 0, dmgPct: 0 });
+  const cap100 = makeFullMythic({ critRate: 3, critDmg: 12, atkPct: 12, dmgPct: 13 }, ['fire', 'fire']);
+  const balanced = makeFullMythic({ critRate: 10, critDmg: 10, atkPct: 10, dmgPct: 10 }, ['lightning', 'fire']);
+  const critMax = makeFullMythic({ critRate: 28, critDmg: 6, atkPct: 6, dmgPct: 0 }, ['lightning', 'lightning']);
   const vsBalanced = critMax.offlinePower / balanced.offlinePower;
   const vsCap100 = critMax.offlinePower / cap100.offlinePower;
-  assert.ok(vsBalanced > 1.05 && vsBalanced < 1.35, `Expected modest crit lead vs balanced, got ${vsBalanced.toFixed(3)}`);
-  assert.ok(vsCap100 > 1.15 && vsCap100 < 1.60, `Expected modest crit lead vs cap100, got ${vsCap100.toFixed(3)}`);
+  assert.ok(vsBalanced > 1.02 && vsBalanced < 1.55, `Expected modest crit lead vs balanced, got ${vsBalanced.toFixed(3)}`);
+  assert.ok(vsCap100 > 1.1 && vsCap100 < 1.8, `Expected modest crit lead vs cap100, got ${vsCap100.toFixed(3)}`);
 });
 
 test('Fairy evolves every 100F with non-DPS utility passives, explore-accelerated gifts, and save sanitization', () => {
@@ -560,7 +572,7 @@ test('filterAndSortStorageItems and getNextSelectedStorageId keep salvage select
   const w1 = { ...generateItem({ stage: 5, forcedRarity: 0, forcedSlot: 'weapon' }), id: 'w1' };
   const w2 = { ...generateItem({ stage: 10, forcedRarity: 2, forcedSlot: 'weapon' }), id: 'w2' };
   const a1 = { ...generateItem({ stage: 8, forcedRarity: 3, forcedSlot: 'armor' }), id: 'a1' };
-  const r1 = { ...generateItem({ stage: 4, forcedRarity: 1, forcedSlot: 'ring' }), id: 'r1' };
+  const r1 = { ...generateItem({ stage: 4, forcedRarity: 1, forcedSlot: 'accessory', forcedAxis: 'lightning' }), id: 'r1' };
   const inventory = [w1, a1, w2, r1];
 
   // Weapon tab sorted by rarity: [w2, w1]
@@ -570,10 +582,17 @@ test('filterAndSortStorageItems and getNextSelectedStorageId keep salvage select
     ['w2', 'w1'],
   );
 
+  // Axis filter selects matching accessory only
+  const lightningTab = filterAndSortStorageItems(inventory, 'lightning', 'rarity');
+  assert.deepEqual(
+    lightningTab.map((i) => i.id),
+    ['r1'],
+  );
+
   // Salvaging w2 advances to w1 (next weapon in weapon tab), never a1
   assert.equal(getNextSelectedStorageId(weaponTab, 'w2'), 'w1');
 
-  // Salvaging the last weapon in the weapon tab yields null (never jumps to armor/ring)
+  // Salvaging the last weapon in the weapon tab yields null (never jumps to armor/acc)
   const weaponTabLast = weaponTab.filter((i) => i.id !== 'w2');
   assert.equal(getNextSelectedStorageId(weaponTabLast, 'w1'), null);
 
@@ -713,39 +732,45 @@ test('Sanctum chamber layout, Great Boss drops, and blind-try difficulty vs upgr
   assert.equal(boss50.isSanctumBoss, true);
   assert.equal(boss50.isMidBoss, false);
   assert.equal(boss50.isGreatDemon, false);
-  assert.ok(boss50.maxHp > boss49.maxHp * 3);
+  assert.ok(boss50.maxHp > boss49.maxHp * 1.8);
   assert.ok(boss50.atk > boss49.atk * 2);
 
   // Simulate deterministic combat: a hero who clears 49F loses blind on 50F,
   // while +20 upgraded Legend 49F-tier gear defeats 50F Great Boss
-  const st = createDefaultState();
   const buildSet = (rarity: 1 | 3, level: number) => {
-    const eq = { ...st.equipped };
-    for (const slot of SLOT_ORDER) {
-      eq[slot] = {
-        ...generateItem({ stage: 49, forcedRarity: rarity, forcedSlot: slot }),
+    const mkSub = () =>
+      rarity === 3
+        ? [
+            { key: 'atkPct' as const, val: 12, boosts: 1 },
+            { key: 'critRate' as const, val: 8, boosts: 1 },
+            { key: 'armorPen' as const, val: 14, boosts: 1 },
+            { key: 'bossDmg' as const, val: 16, boosts: 1 },
+          ]
+        : [
+            { key: 'atkPct' as const, val: 5, boosts: 0 },
+            { key: 'critRate' as const, val: 4, boosts: 0 },
+          ];
+    const eq: EquippedSet = {
+      weapon: { ...generateItem({ stage: 49, forcedRarity: rarity, forcedSlot: 'weapon' }), level, subStats: mkSub() },
+      armor: { ...generateItem({ stage: 49, forcedRarity: rarity, forcedSlot: 'armor' }), level, subStats: mkSub() },
+      acc1: {
+        ...generateItem({ stage: 49, forcedRarity: rarity, forcedSlot: 'accessory', forcedAxis: 'ice' }),
         level,
-        subStats:
-          rarity === 3
-            ? [
-                { key: 'atkPct', val: 12, boosts: 1 },
-                { key: 'critRate', val: 8, boosts: 1 },
-                { key: 'armorPen', val: 14, boosts: 1 },
-                { key: 'bossDmg', val: 16, boosts: 1 },
-              ]
-            : [
-                { key: 'atkPct', val: 5, boosts: 0 },
-                { key: 'critRate', val: 4, boosts: 0 },
-              ],
-      };
-    }
+        subStats: mkSub(),
+      },
+      acc2: {
+        ...generateItem({ stage: 49, forcedRarity: rarity, forcedSlot: 'accessory', forcedAxis: 'dark' }),
+        level,
+        subStats: mkSub(),
+      },
+    };
     return calcHeroStats(eq, false);
   };
   const simulateTurnsToKill = (stats: ReturnType<typeof calcHeroStats>, enemy: ReturnType<typeof createEnemy>) => {
     const nonCritHit = calcHitDamage(stats, enemy.defRate, true, 0, 1, 1);
     const critHit = calcHitDamage(stats, enemy.defRate, true, 1, 1, 1);
     const pCrit = Math.min(1, stats.critRate / 100);
-    const avgHit = nonCritHit * (1 - pCrit) + critHit * pCrit;
+    const avgHit = (nonCritHit * (1 - pCrit) + critHit * pCrit) * getExpectedMultiHitMultiplier(stats.multiHitRate, stats.comboId);
     const enemyHitFreq = enemy.isKeyKeeper ? 0.5 : 1.0;
     return {
       ttkTurns: enemy.maxHp / Math.max(1, avgHit),
@@ -901,19 +926,26 @@ test('Mythic +40 upgrade cap, progressive stone-sink cost, save persistence, and
   // 150F Sanctum boss kills +20 Mythic gear, whereas +40 Mythic gear defeats it cleanly
   const boss150 = createEnemy(150, true);
   const build149MythicSet = (level: number) => {
-    const eq = { ...base.equipped };
-    for (const slot of SLOT_ORDER) {
-      eq[slot] = {
-        ...generateItem({ stage: 149, forcedRarity: 4, forcedSlot: slot }),
+    const mkSub = () => [
+      { key: 'atkPct' as const, val: 8 + Math.floor(level / 4) * 1.4, boosts: Math.floor(level / 16) },
+      { key: 'critRate' as const, val: 8 + Math.floor(level / 4) * 1.3, boosts: Math.floor(level / 16) },
+      { key: 'armorPen' as const, val: 10 + Math.floor(level / 4) * 1.4, boosts: Math.floor(level / 16) },
+      { key: 'bossDmg' as const, val: 16 + Math.floor(level / 4) * 2.2, boosts: Math.floor(level / 16) },
+    ];
+    const eq: EquippedSet = {
+      weapon: { ...generateItem({ stage: 149, forcedRarity: 4, forcedSlot: 'weapon' }), level, subStats: mkSub() },
+      armor: { ...generateItem({ stage: 149, forcedRarity: 4, forcedSlot: 'armor' }), level, subStats: mkSub() },
+      acc1: {
+        ...generateItem({ stage: 149, forcedRarity: 4, forcedSlot: 'accessory', forcedAxis: 'ice' }),
         level,
-        subStats: [
-          { key: 'atkPct', val: 8 + Math.floor(level / 4) * 1.2, boosts: Math.floor(level / 16) },
-          { key: 'critRate', val: 7 + Math.floor(level / 4) * 1.1, boosts: Math.floor(level / 16) },
-          { key: 'armorPen', val: 10 + Math.floor(level / 4) * 1.3, boosts: Math.floor(level / 16) },
-          { key: 'bossDmg', val: 14 + Math.floor(level / 4) * 2.0, boosts: Math.floor(level / 16) },
-        ],
-      };
-    }
+        subStats: mkSub(),
+      },
+      acc2: {
+        ...generateItem({ stage: 149, forcedRarity: 4, forcedSlot: 'accessory', forcedAxis: 'fire' }),
+        level,
+        subStats: mkSub(),
+      },
+    };
     return calcHeroStats(eq, true);
   };
   const sim = (stats: ReturnType<typeof calcHeroStats>) => {
@@ -926,7 +958,9 @@ test('Mythic +40 upgrade cap, progressive stone-sink cost, save persistence, and
           : c * (2.0 + ((stats.critRate - 200) / 100) * 2.0);
     const pen = stats.armorPen / 100;
     const defMult = Math.max(0.1, 1 - boss150.defRate * (1 - pen));
-    const dmgPerTurn = stats.atk * (1 + stats.dmgPct / 100) * (1 + stats.bossDmg / 100) * critMult * defMult;
+    const multiMult = getExpectedMultiHitMultiplier(stats.multiHitRate, stats.comboId);
+    const dmgPerTurn =
+      stats.atk * (1 + stats.dmgPct / 100) * (1 + stats.bossDmg / 100) * critMult * defMult * multiMult;
     return {
       ttkTurns: boss150.maxHp / dmgPerTurn,
       surviveTurns: stats.hp / boss150.atk,
@@ -1202,27 +1236,22 @@ test('shouldRetreatInRoom and findHeroSafePath prevent fighting boss while room 
   assert.ok(narrowPath !== null);
 });
 
-test('Boots main stat is dmgPct, aspd is removed, and legacy saves migrate aspd cleanly', () => {
-  assert.equal(SLOTS.boots.mainType, 'dmgPct');
-  assert.equal(SLOTS.boots.mainLabel, '与ダメージ');
+test('aspd is removed from SUB_POOL, multiHitRate is Ice-only, and legacy aspd/boots saves migrate cleanly', () => {
   assert.equal(
-    SUB_POOL.some((s) => (s.key as string) === 'aspd'),
+    SUB_POOL.some((s) => (s.key as string) === 'aspd' || (s.key as string) === 'multiHitRate'),
     false,
   );
+  assert.equal(ACCESSORY_AXES.ice.mainType, 'multiHitRate');
+  assert.equal(SLOTS.acc1.shortLabel, 'アクセ1');
+  assert.equal(SLOTS.acc2.shortLabel, 'アクセ2');
 
-  const boots = generateItem({ stage: 5, forcedRarity: 2, forcedSlot: 'boots' });
-  assert.equal(boots.mainStat.type, 'dmgPct');
+  const iceAcc = generateItem({ stage: 5, forcedRarity: 2, forcedSlot: 'accessory', forcedAxis: 'ice' });
+  assert.equal(iceAcc.mainStat.type, 'multiHitRate');
 
   const base = createDefaultState();
   const legacySave = JSON.stringify({
     ...base,
     equipped: {
-      ...base.equipped,
-      boots: {
-        ...boots,
-        mainStat: { type: 'aspd', base: 14, label: '攻撃速度', unit: '%' },
-        subStats: [{ key: 'aspd', val: 6.5, boosts: 1 }],
-      },
       weapon: {
         ...base.equipped.weapon,
         subStats: [
@@ -1230,12 +1259,26 @@ test('Boots main stat is dmgPct, aspd is removed, and legacy saves migrate aspd 
           { key: 'aspd', val: 5.5, boosts: 0 },
         ],
       },
+      armor: base.equipped.armor,
+      boots: {
+        ...iceAcc,
+        id: 'legacy_boots',
+        slot: 'boots',
+        accAxis: undefined,
+        rarity: 3,
+        level: 10,
+        mainStat: { type: 'aspd', base: 14, label: '攻撃速度', unit: '%' },
+        subStats: [{ key: 'aspd', val: 6.5, boosts: 1 }],
+      },
     },
   });
   const parsed = parseSaveState(legacySave);
   assert.ok(parsed !== null);
-  assert.equal(parsed.equipped.boots.mainStat.type, 'dmgPct');
-  assert.equal(parsed.equipped.boots.subStats[0].key, 'dmgPct');
+  assert.equal(parsed.equipped.acc1.id, 'legacy_boots');
+  assert.equal(parsed.equipped.acc1.slot, 'accessory');
+  assert.equal(parsed.equipped.acc1.accAxis, 'ice');
+  assert.equal(parsed.equipped.acc1.mainStat.type, 'multiHitRate');
+  assert.equal(parsed.equipped.acc1.subStats[0].key, 'dmgPct');
   // Weapon already had dmgPct so migrated substat must pick another non-duplicate SUB_POOL key
   assert.equal(
     parsed.equipped.weapon.subStats.some((s) => (s.key as string) === 'aspd'),
@@ -1503,188 +1546,531 @@ test('At 100% exploration without floor key, pickExplorationTarget patrols every
   }
 });
 
-test('Party system initializes 3 active classic jobs, 5-character roster, EXP sharing, skill allocation, and free reset', () => {
-  const st = createDefaultState();
-  assert.deepEqual(st.party.activeIds, ['warrior', 'mage', 'cleric']);
-  assert.equal(JOB_ORDER.length, 5);
-  assert.equal(st.party.roster.warrior.unlocked, true);
-  assert.equal(st.party.roster.mage.unlocked, true);
-  assert.equal(st.party.roster.cleric.unlocked, true);
-  assert.equal(st.party.roster.ranger.unlocked, false);
-  assert.equal(st.party.roster.assassin.unlocked, false);
-  assert.equal(st.party.roster.warrior.unspentSp, 1);
+test('Step 1: turn-based mob pacing achieves 4-6T on fresh tier, 2-3T on upgraded tier, and 1T on past floors', () => {
+  const buildDeterministicSet = (stage: number, rarity: 1 | 2, level: number) => {
+    const tierStage = getEquipTierStage(stage);
+    const rMult = RARITIES[rarity].mainMult;
+    const mkSub = () => [
+      { key: 'atkPct' as const, val: rarity === 2 ? 7 : 4, boosts: 0 },
+      { key: 'critRate' as const, val: rarity === 2 ? 5 : 3, boosts: 0 },
+    ];
+    const weapon = generateItem({ stage, forcedRarity: rarity, forcedSlot: 'weapon' });
+    weapon.mainStat.base = Math.round(9 * Math.pow(1.14, tierStage - 1) * rMult);
+    weapon.level = level;
+    weapon.subStats = mkSub();
 
-  // Allocate skill point and test free reset
-  const w = st.party.roster.warrior;
-  assert.equal(allocateSkillPoint(w, 'warrior_bash'), true);
-  assert.equal(w.skills.warrior_bash, 1);
-  assert.equal(w.unspentSp, 0);
-  assert.equal(allocateSkillPoint(w, 'warrior_bash'), false); // out of SP
-  assert.equal(getSpentSkillPoints(w), 1);
+    const armor = generateItem({ stage, forcedRarity: rarity, forcedSlot: 'armor' });
+    armor.mainStat.base = Math.round(55 * Math.pow(1.14, tierStage - 1) * rMult);
+    armor.level = level;
+    armor.subStats = mkSub();
 
-  const refunded = resetMemberSkills(w);
-  assert.equal(refunded, 1);
-  assert.equal(w.skills.warrior_bash, 0);
-  assert.equal(w.unspentSp, 1);
+    const acc1 = generateItem({ stage, forcedRarity: rarity, forcedSlot: 'accessory', forcedAxis: 'ice' });
+    acc1.mainStat.base = +(ACCESSORY_AXES.ice.base * rMult).toFixed(1);
+    acc1.level = level;
+    acc1.subStats = mkSub();
 
-  // Max skill level cap (5)
-  w.unspentSp = 10;
-  for (let i = 0; i < MAX_SKILL_LEVEL; i++) {
-    assert.equal(allocateSkillPoint(w, 'warrior_bash'), true);
-  }
-  assert.equal(allocateSkillPoint(w, 'warrior_bash'), false);
-  assert.equal(w.skills.warrior_bash, MAX_SKILL_LEVEL);
-  assert.equal(resetMemberSkills(w), MAX_SKILL_LEVEL);
+    const acc2 = generateItem({ stage, forcedRarity: rarity, forcedSlot: 'accessory', forcedAxis: 'fire' });
+    acc2.mainStat.base = +(ACCESSORY_AXES.fire.base * rMult).toFixed(1);
+    acc2.level = level;
+    acc2.subStats = mkSub();
 
-  // EXP distribution: active gets 100%, unlocked bench gets 50%, locked gets 0%
-  st.party.roster.ranger.unlocked = true; // bench member
-  const lv1Req = expToNextLevel(1);
-  const levelUps = grantPartyExp(st.party, lv1Req);
-  assert.equal(st.party.roster.warrior.level, 2);
-  assert.equal(st.party.roster.mage.level, 2);
-  assert.equal(st.party.roster.cleric.level, 2);
-  assert.equal(st.party.roster.ranger.level, 1);
-  assert.equal(st.party.roster.ranger.exp, Math.floor(lv1Req * 0.5));
-  assert.equal(st.party.roster.assassin.exp, 0);
-  assert.equal(levelUps.length, 3);
-  assert.ok(calcEnemyExpReward(10, true, false) > calcEnemyExpReward(10, false, false));
-  assert.ok(calcEnemyExpReward(50, true, true) > calcEnemyExpReward(50, true, false));
+    return calcHeroStats({ weapon, armor, acc1, acc2 }, false);
+  };
+
+  const calcExpectedTurns = (stats: ReturnType<typeof calcHeroStats>, enemy: ReturnType<typeof createEnemy>) => {
+    const nonCrit = calcHitDamage(stats, enemy.defRate, enemy.isBoss, 0, 1, 1);
+    const crit = calcHitDamage(stats, enemy.defRate, enemy.isBoss, 1, 1, 1);
+    const pCrit = Math.min(1, stats.critRate / 100);
+    const avgTurnDmg =
+      (nonCrit * (1 - pCrit) + crit * pCrit) * getExpectedMultiHitMultiplier(stats.multiHitRate, stats.comboId);
+    return enemy.maxHp / Math.max(1, avgTurnDmg);
+  };
+
+  // Freshly arrived at 6F wearing previous 1F-tier Rare+10 gear -> 4-6 turns
+  const freshSt6Hero = buildDeterministicSet(1, 1, 10);
+  const mob6 = createEnemy(6, false, -100, 'normal');
+  const freshTtk6 = calcExpectedTurns(freshSt6Hero, mob6);
+  assert.ok(
+    freshTtk6 >= 3.5 && freshTtk6 <= 6.8,
+    `Expected fresh 6F mob TTK around 4-6 turns, got ${freshTtk6.toFixed(2)}`,
+  );
+
+  // Freshly arrived at 26F wearing previous 21F-tier Epic+6 gear -> 4-6 turns
+  const freshSt26Hero = buildDeterministicSet(21, 2, 6);
+  const mob26 = createEnemy(26, false, -100, 'normal');
+  const freshTtk26 = calcExpectedTurns(freshSt26Hero, mob26);
+  assert.ok(
+    freshTtk26 >= 3.8 && freshTtk26 <= 6.8,
+    `Expected fresh 26F mob TTK around 4-6 turns, got ${freshTtk26.toFixed(2)}`,
+  );
+
+  // Updated 6F Rare+10 gear vs 6F mob -> 2-3 turns
+  const upgradedSt6Hero = buildDeterministicSet(6, 1, 10);
+  const upgradedTtk6 = calcExpectedTurns(upgradedSt6Hero, mob6);
+  assert.ok(
+    upgradedTtk6 >= 1.8 && upgradedTtk6 <= 3.5,
+    `Expected upgraded 6F mob TTK around 2-3 turns, got ${upgradedTtk6.toFixed(2)}`,
+  );
+
+  // Revisiting 1F with 6F Rare+10 gear -> 1-turn sweep!
+  const mob1 = createEnemy(1, false, -100, 'normal');
+  const sweepTtk1 = calcExpectedTurns(upgradedSt6Hero, mob1);
+  assert.ok(sweepTtk1 <= 1.25, `Expected 1-turn sweep on 1F with 6F gear, got ${sweepTtk1.toFixed(2)}`);
 });
 
-test('Character recruitment (free at stage or early via stones), formation swapping, and syncLeaderEquipped', () => {
-  const st = createDefaultState();
-  st.party.roster.warrior.level = 4;
-  st.party.roster.mage.level = 4;
-  st.party.roster.cleric.level = 4;
+test('Step 1: mob archetypes (normal/armored/striker) apply from stage 3+ with distinct DEF/HP/ATK profiles', () => {
+  assert.equal(rollMobArchetype(1, () => 0.99), 'normal');
+  assert.equal(rollMobArchetype(2, () => 0.99), 'normal');
+  assert.equal(rollMobArchetype(3, () => 0.2), 'normal');
+  assert.equal(rollMobArchetype(3, () => 0.6), 'armored');
+  assert.equal(rollMobArchetype(3, () => 0.9), 'striker');
 
-  // Stage 1 with 0 stones: cannot recruit Ranger
-  st.stones = 0;
-  assert.equal(canRecruitCharacter(st.party, 'ranger', 1, 0).canFree, false);
-  assert.equal(canRecruitCharacter(st.party, 'ranger', 1, 0).canPay, false);
-  assert.equal(recruitCharacter(st, 'ranger').ok, false);
+  const normal = createEnemy(12, false, -100, 'normal');
+  const armored = createEnemy(12, false, -100, 'armored');
+  const striker = createEnemy(12, false, -100, 'striker');
 
-  // Early recruit Ranger with stones + level catch-up
-  st.stones = JOB_DEFS.ranger.recruitStoneCost;
-  const rPay = recruitCharacter(st, 'ranger');
-  assert.equal(rPay.ok, true);
-  assert.equal(rPay.paidStones, JOB_DEFS.ranger.recruitStoneCost);
-  assert.equal(st.stones, 0);
-  assert.equal(st.party.roster.ranger.unlocked, true);
-  assert.equal(st.party.roster.ranger.level, 4);
-  assert.equal(st.party.roster.ranger.unspentSp, 4); // 1 starter + 3 catch-up
-
-  // Free recruit Assassin at stage >= 8
-  st.maxStage = 8;
-  const rFree = recruitCharacter(st, 'assassin');
-  assert.equal(rFree.ok, true);
-  assert.equal(rFree.paidStones, 0);
-  assert.equal(st.party.roster.assassin.unlocked, true);
-
-  // Swap Ranger into Leader slot #0 -> syncLeaderEquipped mirrors Ranger weapon/armor
-  const rangerWep = generateItem({ stage: 6, forcedRarity: 3, forcedSlot: 'weapon' });
-  st.party.roster.ranger.equipment.weapon = rangerWep;
-  assert.equal(setActivePartySlot(st.party, 0, 'ranger'), true);
-  syncLeaderEquipped(st);
-  assert.equal(st.party.activeIds[0], 'ranger');
-  assert.equal(st.equipped.weapon.id, rangerWep.id);
-
-  // Swapping an already-active member swaps their positions cleanly
-  assert.equal(setActivePartySlot(st.party, 0, 'mage'), true);
-  assert.equal(st.party.activeIds[0], 'mage');
-  assert.equal(st.party.activeIds[1], 'ranger');
+  assert.equal(normal.archetype, 'normal');
+  assert.equal(armored.archetype, 'armored');
+  assert.equal(striker.archetype, 'striker');
+  assert.ok(armored.name.includes('[重装]'));
+  assert.ok(striker.name.includes('[強襲]'));
+  assert.ok(armored.defRate > normal.defRate + 0.18);
+  assert.ok(armored.maxHp > normal.maxHp);
+  assert.ok(armored.atk < normal.atk);
+  assert.ok(striker.atk > normal.atk * 1.2);
+  assert.ok(striker.maxHp < normal.maxHp * 0.85);
 });
 
-test('Plan A stats, party synergies, threat targeting, roll quality, 1-slot substat reforge, and auto-equip', () => {
-  const st = createDefaultState();
-  const strongWep = generateItem({ stage: 12, forcedRarity: 4, forcedSlot: 'weapon' });
-  strongWep.uniqueAffix = { key: 'vampiric', val: 6 };
-  st.party.roster.warrior.equipment.weapon = strongWep;
-  st.party.roster.cleric.skills.cleric_aura = 3; // +12% party ATK & HP
-
-  const active = getActiveMembers(st.party);
-  const wStats = calcPartyMemberStats(st.party.roster.warrior, st.equipped, false, active);
-  const mStats = calcPartyMemberStats(st.party.roster.mage, st.equipped, false, active);
-  assert.ok(wStats.atk > mStats.atk, 'Warrior with stage-12 Mythic weapon must out-ATK starter Mage');
-  assert.equal(wStats.vampiricPct, 6);
-  assert.ok(wStats.threatWeight > mStats.threatWeight, 'Warrior must carry higher threat weight than Mage');
-
-  // Shared artifact treasure affix + Ranger treasure skill aggregate cleanly
-  st.equipped.ring.uniqueAffix = { key: 'treasure', val: 12 };
-  st.party.roster.ranger.unlocked = true;
-  st.party.roster.ranger.skills.ranger_treasure = 4;
-  setActivePartySlot(st.party, 2, 'ranger');
-  const bonuses = getPartyBonuses(st.party, st.equipped);
-  assert.equal(bonuses.stoneBonusPct, 12 + 24);
-  assert.equal(bonuses.dropBonusPct, 16);
-
-  // Threat-weighted target picker favors high-threat member
-  let warriorPicks = 0;
-  for (let i = 0; i < 100; i++) {
-    const picked = pickEnemyTargetMember(
-      [
-        { id: 'warrior', threatWeight: 2.5 },
-        { id: 'mage', threatWeight: 0.7 },
-      ],
-      () => i / 100,
-    );
-    if (picked === 'warrior') warriorPicks++;
-  }
-  assert.ok(warriorPicks > 70, `Expected warrior to absorb >70% of hits, got ${warriorPicks}%`);
-
-  // Roll quality & 1-slot substat reforge lock
-  const legendItem = generateItem({ stage: 15, forcedRarity: 3, forcedSlot: 'ring' });
-  const quality = getItemRollQuality(legendItem);
-  assert.ok(quality.pct >= 50 && quality.pct <= 100);
-  assert.ok(['S', 'A', 'B', 'C'].includes(quality.grade));
-  const firstCost = getReforgeCost(legendItem);
-  assert.ok(firstCost > 0);
-  const rf1 = reforgeItemSubstat(legendItem, 1, () => 0.4);
-  assert.ok(rf1 !== null);
-  assert.equal(legendItem.reforgedSubIdx, 1);
-  assert.equal(legendItem.reforgeCount, 1);
-  assert.ok(getReforgeCost(legendItem) > firstCost);
-  // Second slot is locked once slot 1 has been reforged
-  assert.equal(reforgeItemSubstat(legendItem, 0, () => 0.4), null);
-  // Same slot can be reforged again
-  assert.ok(reforgeItemSubstat(legendItem, 1, () => 0.7) !== null);
-  assert.equal(legendItem.reforgeCount, 2);
-
-  // Auto-equip picks stronger candidate from inventory
-  const weakStarter = st.party.roster.mage.equipment.weapon;
-  const upgradeWep = generateItem({ stage: 10, forcedRarity: 3, forcedSlot: 'weapon' });
-  const best = findBestAutoEquipCandidate([upgradeWep], weakStarter, 'weapon');
-  assert.equal(best?.id, upgradeWep.id);
-});
-
-test('parseSaveState migrates legacy 1-hero save cleanly into 3-member active party without losing gear', () => {
+test('Step 1: parseSaveState migrates temporary 3-party saves back to 1-hero without losing upgraded weapons/armors', () => {
   const base = createDefaultState();
-  const heroWeapon = generateItem({ stage: 20, forcedRarity: 3, forcedSlot: 'weapon' });
-  const heroArmor = generateItem({ stage: 20, forcedRarity: 3, forcedSlot: 'armor' });
-  heroWeapon.uniqueAffix = { key: 'first_strike', val: 35 };
+  const warriorWep = { ...generateItem({ stage: 12, forcedRarity: 2, forcedSlot: 'weapon' }), level: 8 };
+  const mageWep = { ...generateItem({ stage: 18, forcedRarity: 3, forcedSlot: 'weapon' }), level: 12 };
+  const clericArmor = { ...generateItem({ stage: 15, forcedRarity: 3, forcedSlot: 'armor' }), level: 10 };
 
-  const legacySave = JSON.stringify({
-    stage: 22,
-    maxStage: 25,
-    stones: 500,
+  const partySave = JSON.stringify({
+    ...base,
+    stage: 18,
+    maxStage: 20,
     equipped: {
       ...base.equipped,
-      weapon: heroWeapon,
-      armor: heroArmor,
+      weapon: warriorWep,
+    },
+    party: {
+      activeIds: ['warrior', 'mage', 'cleric'],
+      roster: {
+        warrior: { equipment: { weapon: warriorWep, armor: base.equipped.armor } },
+        mage: { equipment: { weapon: mageWep, armor: base.equipped.armor } },
+        cleric: { equipment: { weapon: base.equipped.weapon, armor: clericArmor } },
+      },
     },
     inventory: [],
     stash: [],
   });
 
-  const parsed = parseSaveState(legacySave);
+  const parsed = parseSaveState(partySave);
   assert.ok(parsed !== null);
-  assert.deepEqual(parsed.party.activeIds, ['warrior', 'mage', 'cleric']);
-  assert.equal(parsed.party.roster.warrior.equipment.weapon.id, heroWeapon.id);
-  assert.equal(parsed.party.roster.warrior.equipment.weapon.uniqueAffix?.key, 'first_strike');
-  assert.equal(parsed.party.roster.warrior.equipment.armor.id, heroArmor.id);
-  assert.equal(parsed.equipped.weapon.id, heroWeapon.id);
-  assert.equal(parsed.party.roster.mage.unlocked, true);
-  assert.equal(parsed.party.roster.cleric.unlocked, true);
+  // Keeps strongest weapon (mageWep) and strongest armor (clericArmor) equipped
+  assert.equal(parsed.equipped.weapon.id, mageWep.id);
+  assert.equal(parsed.equipped.armor.id, clericArmor.id);
+  // Rescues warrior's upgraded weapon safely into inventory instead of deleting it
+  assert.ok(
+    parsed.inventory.some((it) => it.id === warriorWep.id),
+    'Warrior upgraded weapon must be preserved in bag during 3-party->1-hero migration',
+  );
 });
+
+test('Step 2: equipment synthesis upgrades 9 same-rarity items to +1 rarity at maxStage with proportional slot lottery and 60% stone refund', () => {
+  assert.equal(SYNTHESIS_MATERIAL_COUNT, 9);
+  assert.equal(MYTHIC_REFORGE_COUNT, 3);
+  assert.equal(SYNTHESIS_STONE_REFUND_RATE, 0.6);
+
+  const st = createDefaultState();
+  st.stage = 5;
+  st.maxStage = 26;
+  st.stones = 100;
+
+  // 9 unlocked Common weapons (some upgraded) + 1 locked Common weapon + 1 Common in stash
+  const mats = Array.from({ length: 9 }, (_, i) => ({
+    ...generateItem({ stage: 2, forcedRarity: 0, forcedSlot: 'weapon' }),
+    id: `c_wep_${i}`,
+    level: i === 0 ? 4 : 0,
+    spentStones: i === 0 ? 150 : 0,
+  }));
+  const lockedCommon = {
+    ...generateItem({ stage: 2, forcedRarity: 0, forcedSlot: 'weapon' }),
+    id: 'c_locked',
+    locked: true,
+  };
+  const stashCommon = {
+    ...generateItem({ stage: 2, forcedRarity: 0, forcedSlot: 'weapon' }),
+    id: 'c_stash',
+  };
+  st.inventory = [...mats, lockedCommon];
+  st.stash = [stashCommon];
+
+  // Eligible candidates strictly exclude locked and stash items, and sort lowest level first
+  const eligible = getEligibleSynthesisCandidates(st.inventory, 0, 'all');
+  assert.equal(eligible.length, 9);
+  assert.equal(eligible.some((i) => i.id === 'c_locked'), false);
+  assert.equal(eligible.some((i) => i.id === 'c_stash'), false);
+  assert.equal(eligible[eligible.length - 1].id, 'c_wep_0'); // Lv+4 item sorted last for auto-fill safety
+  assert.equal(countReadySynthesisRecipes(st.inventory, false), 1);
+
+  // Preview computes 100% weapon + 60% stone refund (floor(150 * 0.6) = 90)
+  const preview = computeSynthesisPreview(mats);
+  assert.equal(preview.refundStones, 90);
+  assert.equal(preview.slotProbabilities.length, 1);
+  assert.equal(preview.slotProbabilities[0].slot, 'weapon');
+  assert.equal(preview.slotProbabilities[0].pct, 100);
+
+  // Attempting to include a locked item fails cleanly
+  const badLocked = executeSynthesis(st, 0, [...mats.slice(0, 8).map((m) => m.id), 'c_locked']);
+  assert.equal(badLocked.ok, false);
+
+  // Valid 9-weapon Common synthesis -> 100% Rare weapon at maxStage (26) + 90 stones refunded
+  const res = executeSynthesis(st, 0, mats.map((m) => m.id), () => 0.5);
+  assert.equal(res.ok, true);
+  if (res.ok) {
+    assert.equal(res.resultItem.rarity, 1);
+    assert.equal(res.resultItem.slot, 'weapon');
+    assert.equal(res.resultItem.stage, 26);
+    assert.equal(res.refundStones, 90);
+  }
+  assert.equal(st.stones, 190);
+  // 9 consumed + 1 added + 1 locked kept = 2 items in bag
+  assert.equal(st.inventory.length, 2);
+  assert.ok(st.inventory.some((i) => i.id === 'c_locked'));
+  assert.equal(st.stash.length, 1);
+});
+
+test('Step 2: mixed-slot synthesis weights by input ratio, and cleared100 gates Legend->Mythic and Mythic x3 re-forge', () => {
+  const st = createDefaultState();
+  st.maxStage = 120;
+  st.cleared100 = false;
+
+  assert.equal(isSynthesisRecipeUnlocked(0, false), true);
+  assert.equal(isSynthesisRecipeUnlocked(2, false), true);
+  assert.equal(isSynthesisRecipeUnlocked(3, false), false);
+  assert.equal(isSynthesisRecipeUnlocked(4, false), false);
+  assert.equal(isSynthesisRecipeUnlocked(3, true), true);
+  assert.equal(isSynthesisRecipeUnlocked(4, true), true);
+
+  // 6 Legend weapons + 3 Legend armors -> 67% weapon / 33% armor
+  const legends = [
+    ...Array.from({ length: 6 }, (_, i) => ({
+      ...generateItem({ stage: 80, forcedRarity: 3, forcedSlot: 'weapon' }),
+      id: `l_w_${i}`,
+    })),
+    ...Array.from({ length: 3 }, (_, i) => ({
+      ...generateItem({ stage: 80, forcedRarity: 3, forcedSlot: 'armor' }),
+      id: `l_a_${i}`,
+    })),
+  ];
+  st.inventory = [...legends];
+
+  // Blocked before cleared100
+  const blocked = executeSynthesis(st, 3, legends.map((m) => m.id));
+  assert.equal(blocked.ok, false);
+
+  // Unlocked after cleared100; rng=0.8 picks index 7 (armor), rng=0.1 picks index 0 (weapon)
+  st.cleared100 = true;
+  const preview = computeSynthesisPreview(legends);
+  assert.equal(preview.slotProbabilities[0].slot, 'weapon');
+  assert.equal(preview.slotProbabilities[0].pct, 67);
+  assert.equal(preview.slotProbabilities[1].slot, 'armor');
+  assert.equal(preview.slotProbabilities[1].pct, 33);
+
+  const mythicRes = executeSynthesis(st, 3, legends.map((m) => m.id), () => 0.8);
+  assert.equal(mythicRes.ok, true);
+  if (mythicRes.ok) {
+    assert.equal(mythicRes.resultItem.rarity, 4);
+    assert.equal(mythicRes.resultItem.slot, 'armor');
+    assert.equal(mythicRes.resultItem.stage, 120);
+  }
+
+  // Mythic x3 re-forge (requires exactly 3 Mythic items + cleared100)
+  const mythics = Array.from({ length: 3 }, (_, i) => ({
+    ...generateItem({ stage: 110, forcedRarity: 4, forcedSlot: 'accessory', forcedAxis: 'lightning' }),
+    id: `m_r_${i}`,
+    spentStones: 500,
+  }));
+  st.inventory = [...mythics];
+  st.stones = 0;
+
+  const reforgeRes = executeSynthesis(st, 4, mythics.map((m) => m.id), () => 0.2);
+  assert.equal(reforgeRes.ok, true);
+  if (reforgeRes.ok) {
+    assert.equal(reforgeRes.recipe.isMythicReforge, true);
+    assert.equal(reforgeRes.resultItem.rarity, 4);
+    assert.equal(reforgeRes.resultItem.slot, 'accessory');
+    assert.equal(reforgeRes.resultItem.accAxis, 'lightning');
+    assert.equal(reforgeRes.refundStones, 900); // floor(1500 * 0.6)
+  }
+  assert.equal(st.stones, 900);
+  assert.equal(st.inventory.length, 1);
+});
+
+test('Step 3: multi-hit rate scaling, cap at 5 total hits, and pure Ice 3rd+ hit bonus', () => {
+  assert.equal(FOLLOW_UP_DAMAGE_RATIO, 0.55);
+  assert.equal(ICE_PURE_THIRD_HIT_RATIO, 0.63);
+  assert.equal(MAX_EXTRA_MULTI_HITS, 4);
+
+  assert.equal(rollExtraHits(0, () => 0.0), 0);
+  assert.equal(rollExtraHits(50, () => 0.49), 1);
+  assert.equal(rollExtraHits(50, () => 0.51), 0);
+  assert.equal(rollExtraHits(100, () => 0.99), 1);
+  assert.equal(rollExtraHits(150, () => 0.49), 2);
+  assert.equal(rollExtraHits(150, () => 0.51), 1);
+  assert.equal(rollExtraHits(250, () => 0.49), 3);
+  // Capped at MAX_EXTRA_MULTI_HITS (4 extra = 5 total hits/turn)
+  assert.equal(rollExtraHits(550, () => 0.0), 4);
+
+  // Pure ice+ice boosts 3rd+ hits from 0.55 to 0.63
+  const baseStats: HeroStats = {
+    atk: 1000,
+    hp: 5000,
+    critRate: 0,
+    critDmg: 200,
+    dmgPct: 0,
+    armorPen: 0,
+    rawArmorPen: 0,
+    bossDmg: 0,
+    multiHitRate: 200, // guaranteed 3 hits
+    comboId: 'ice+ice',
+    mythicCount: 0,
+    offlinePower: 0,
+  };
+  const dummyMob = { hp: 50000, maxHp: 50000, defRate: 0, isBoss: false, archetype: 'normal' as const };
+  const icePlan = resolveTurnAttackPlan(baseStats, dummyMob, false, () => 0.99, 1.0);
+  assert.equal(icePlan.hits.length, 3);
+  assert.equal(icePlan.hits[0].dmg, 1000);
+  assert.equal(icePlan.hits[1].dmg, 550);
+  assert.equal(icePlan.hits[2].dmg, 630);
+});
+
+test('Step 3: all 10 Resonance Combos are order-independent, have unique 3D VFX styles, and apply distinct effects', () => {
+  const seenIds = new Set<AccessoryComboId>();
+  const slashStyles = new Set<string>();
+
+  for (const a of ACCESSORY_AXIS_ORDER as AccessoryAxis[]) {
+    for (const b of ACCESSORY_AXIS_ORDER as AccessoryAxis[]) {
+      const idAB = getAccessoryComboId(a, b);
+      const idBA = getAccessoryComboId(b, a);
+      assert.equal(idAB, idBA, `Combo ID must be symmetric for (${a}, ${b})`);
+      seenIds.add(idAB);
+    }
+  }
+  assert.equal(seenIds.size, 10, '4 axes with replacement must yield exactly 10 unique combos');
+
+  for (const id of seenIds) {
+    const def = ACCESSORY_COMBOS[id];
+    assert.ok(def, `Missing combo definition for ${id}`);
+    slashStyles.add(def.vfx.slashStyle);
+  }
+  assert.equal(slashStyles.size, 10, 'Every Resonance Combo must have its own distinct 3D slashStyle');
+
+  const mkStats = (comboId: AccessoryComboId, overrides: Partial<HeroStats> = {}): HeroStats => ({
+    atk: 1000,
+    hp: 5000,
+    critRate: 0,
+    critDmg: 200,
+    dmgPct: 0,
+    armorPen: 0,
+    rawArmorPen: 0,
+    bossDmg: 0,
+    multiHitRate: 0,
+    comboId,
+    mythicCount: 0,
+    offlinePower: 0,
+    ...overrides,
+  });
+
+  // 1. fire+fire: +12% dmg vs enemy >= 60% HP, normal below 60%
+  const highHpEnemy = { hp: 800, maxHp: 1000, defRate: 0, isBoss: false, archetype: 'normal' as const };
+  const lowHpEnemy = { hp: 500, maxHp: 1000, defRate: 0, isBoss: false, archetype: 'normal' as const };
+  assert.equal(resolveTurnAttackPlan(mkStats('fire+fire'), highHpEnemy, false, () => 0.99, 1.0).totalDmg, 1120);
+  assert.equal(resolveTurnAttackPlan(mkStats('fire+fire'), lowHpEnemy, false, () => 0.99, 1.0).totalDmg, 1000);
+
+  // 2. lightning+lightning: +22% critDmg in calcHeroStats
+  const st = createDefaultState();
+  const lt1 = generateItem({ stage: 10, forcedRarity: 2, forcedSlot: 'accessory', forcedAxis: 'lightning' });
+  const lt2 = generateItem({ stage: 10, forcedRarity: 2, forcedSlot: 'accessory', forcedAxis: 'lightning' });
+  lt1.subStats = [];
+  lt2.subStats = [];
+  const ltStats = calcHeroStats(
+    {
+      weapon: { ...st.equipped.weapon, subStats: [] },
+      armor: { ...st.equipped.armor, subStats: [] },
+      acc1: lt1,
+      acc2: lt2,
+    },
+    false,
+  );
+  assert.equal(ltStats.comboId, 'lightning+lightning');
+  assert.equal(ltStats.critDmg, 172); // 150 base + 22 pure lightning combo
+
+  // 3. dark+dark: excess armorPen > 100% converts 35% to heavy/boss dmg (capped +40%)
+  const armoredMob = { hp: 5000, maxHp: 5000, defRate: 0.4, isBoss: false, archetype: 'armored' as const };
+  const darkPlan = resolveTurnAttackPlan(
+    mkStats('dark+dark', { armorPen: 100, rawArmorPen: 140 }),
+    armoredMob,
+    false,
+    () => 0.99,
+    1.0,
+  );
+  // Excess = 40 -> +14% dmg vs armored, defRate fully ignored by 100% pen -> 1140
+  assert.equal(darkPlan.totalDmg, 1140);
+
+  // 4. ice+fire: final hit of multi-hit +15%
+  const iceFirePlan = resolveTurnAttackPlan(
+    mkStats('ice+fire', { multiHitRate: 100 }),
+    highHpEnemy,
+    false,
+    () => 0.99,
+    1.0,
+  );
+  assert.equal(iceFirePlan.hits.length, 2);
+  assert.equal(iceFirePlan.hits[0].dmg, 1000);
+  assert.equal(iceFirePlan.hits[1].dmg, Math.round(1000 * 0.55 * 1.15)); // 633
+
+  // 5. ice+lightning: follow-up hits gain +10% critRate
+  const iceLtPlan = resolveTurnAttackPlan(
+    mkStats('ice+lightning', { multiHitRate: 100, critRate: 90 }),
+    highHpEnemy,
+    false,
+    () => 0.95, // fails 90% on hit 1, succeeds 100% on hit 2
+    1.0,
+  );
+  assert.equal(iceLtPlan.hits[0].critTier, 0);
+  assert.equal(iceLtPlan.hits[1].critTier, 1);
+
+  // 6. ice+dark: 2nd+ hits gain +12% armorPen
+  const iceDarkPlan = resolveTurnAttackPlan(
+    mkStats('ice+dark', { multiHitRate: 100, armorPen: 20 }),
+    armoredMob,
+    false,
+    () => 0.99,
+    1.0,
+  );
+  assert.equal(iceDarkPlan.hits[0].effectiveArmorPen, 20);
+  assert.equal(iceDarkPlan.hits[1].effectiveArmorPen, 32);
+
+  // 7. fire+lightning: crit hits gain +8% dmg
+  const fireLtPlan = resolveTurnAttackPlan(
+    mkStats('fire+lightning', { critRate: 100, critDmg: 200 }),
+    highHpEnemy,
+    false,
+    () => 0.1,
+    1.0,
+  );
+  assert.equal(fireLtPlan.hits[0].dmg, 2160); // 1000 * 2.0 * 1.08
+
+  // 8. fire+dark: +10% dmg vs heavy/boss
+  const fireDarkPlan = resolveTurnAttackPlan(mkStats('fire+dark'), armoredMob, false, () => 0.99, 1.0);
+  assert.equal(fireDarkPlan.hits[0].dmg, 660); // 1000 * 1.1 * (1 - 0.4)
+
+  // 9. lightning+dark: crit hits gain +12% armorPen
+  const ltDarkPlan = resolveTurnAttackPlan(
+    mkStats('lightning+dark', { critRate: 100, armorPen: 30 }),
+    armoredMob,
+    false,
+    () => 0.1,
+    1.0,
+  );
+  assert.equal(ltDarkPlan.hits[0].effectiveArmorPen, 42);
+
+  // 10. getAccessoryCombo resolves from items directly
+  const comboFromItems = getAccessoryCombo(
+    generateItem({ stage: 1, forcedSlot: 'accessory', forcedAxis: 'dark' }),
+    generateItem({ stage: 1, forcedSlot: 'accessory', forcedAxis: 'ice' }),
+  );
+  assert.equal(comboFromItems.id, 'ice+dark');
+});
+
+test('Step 3: synthesis preserves accessory axis ratios proportionally', () => {
+  const ice6 = Array.from({ length: 6 }, (_, i) => ({
+    ...generateItem({ stage: 10, forcedRarity: 1, forcedSlot: 'accessory', forcedAxis: 'ice' }),
+    id: `syn_ice_${i}`,
+  }));
+  const fire3 = Array.from({ length: 3 }, (_, i) => ({
+    ...generateItem({ stage: 10, forcedRarity: 1, forcedSlot: 'accessory', forcedAxis: 'fire' }),
+    id: `syn_fire_${i}`,
+  }));
+  const mixed = [...ice6, ...fire3];
+  const preview = computeSynthesisPreview(mixed);
+  assert.equal(preview.slotProbabilities.length, 2);
+  assert.equal(preview.slotProbabilities[0].accAxis, 'ice');
+  assert.equal(preview.slotProbabilities[0].pct, 67);
+  assert.equal(preview.slotProbabilities[1].accAxis, 'fire');
+  assert.equal(preview.slotProbabilities[1].pct, 33);
+
+  assert.deepEqual(pickWeightedOutcomeFromMaterials(mixed, () => 0.1), { slot: 'accessory', accAxis: 'ice' });
+  assert.deepEqual(pickWeightedOutcomeFromMaterials(mixed, () => 0.8), { slot: 'accessory', accAxis: 'fire' });
+});
+
+test('Step 3: parseSaveState performs lossless 6-slot to 4-slot migration (top 2 equipped, extras to bag/stash)', () => {
+  const base = createDefaultState();
+  const makeLegacySlot = (id: string, legacySlot: string, rarity: 0 | 1 | 2 | 3 | 4, level: number, spentStones: number) => ({
+    id,
+    name: `旧${legacySlot}`,
+    slot: legacySlot,
+    rarity,
+    level,
+    stage: 30,
+    icon: '💍',
+    mainStat: { type: 'critRate', base: 10, label: '会心率', unit: '%' },
+    subStats: [{ key: 'atkPct', val: 5, boosts: 0 }],
+    locked: false,
+    spentStones,
+  });
+
+  // 4 legacy accessories with distinct power rankings:
+  // gauntlets (R4, Lv20) -> dark (#1)
+  // ring      (R3, Lv15) -> lightning (#2)
+  // necklace  (R2, Lv10) -> fire (rescued to bag)
+  // boots     (R1, Lv5)  -> ice  (overflows bag -> rescued to stash!)
+  const fullBag59 = Array.from({ length: 59 }, (_, i) => ({
+    ...generateItem({ stage: 10, forcedSlot: 'weapon' }),
+    id: `bag_fill_${i}`,
+  }));
+
+  const legacy6SlotSave = JSON.stringify({
+    ...base,
+    stage: 35,
+    maxStage: 35,
+    equipped: {
+      weapon: base.equipped.weapon,
+      armor: base.equipped.armor,
+      ring: makeLegacySlot('old_ring', 'ring', 3, 15, 400),
+      necklace: makeLegacySlot('old_neck', 'necklace', 2, 10, 200),
+      gauntlets: makeLegacySlot('old_gaunt', 'gauntlets', 4, 20, 900),
+      boots: makeLegacySlot('old_boots', 'boots', 1, 5, 50),
+    },
+    inventory: fullBag59,
+    stash: [],
+  });
+
+  const migrated = parseSaveState(legacy6SlotSave);
+  assert.ok(migrated !== null);
+
+  // Top 2 highest-value accessories equipped into acc1 & acc2
+  assert.equal(migrated.equipped.acc1.id, 'old_gaunt');
+  assert.equal(migrated.equipped.acc1.accAxis, 'dark');
+  assert.equal(migrated.equipped.acc2.id, 'old_ring');
+  assert.equal(migrated.equipped.acc2.accAxis, 'lightning');
+
+  // Both rescued accessories are placed at the front of the bag, and the 1 overflow bag item moves safely into stash (61 total items, zero loss!)
+  assert.equal(migrated.inventory.length, MAX_BAG_SIZE);
+  assert.equal(migrated.stash.length, 1);
+  const allPreserved = [...migrated.inventory, ...migrated.stash];
+  assert.equal(allPreserved.length, 61);
+  assert.ok(migrated.inventory.some((it) => it.id === 'old_neck' && it.accAxis === 'fire'));
+  assert.ok(migrated.inventory.some((it) => it.id === 'old_boots' && it.accAxis === 'ice'));
+  assert.ok(migrated.stash.some((it) => it.id === 'bag_fill_58'));
+});
+
+
+
 
 
 

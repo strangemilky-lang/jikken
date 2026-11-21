@@ -4,6 +4,7 @@ import { isMidBossFloor, isSanctumFloor } from './sanctum';
 import type {
   DungeonRoom,
   Enemy,
+  EnemyArchetype,
   FloorEnemy,
   FloorLootType,
   MazeCell,
@@ -18,35 +19,53 @@ export function getBiome(stage: number) {
   return BIOMES[idx];
 }
 
-export function createEnemy(stage: number, isBoss: boolean, rareSlimeBonusPct = 0): Enemy {
+export function rollMobArchetype(stage: number, rng: () => number = Math.random): EnemyArchetype {
+  if (stage < 3) return 'normal';
+  const r = rng();
+  if (r < 0.50) return 'normal';
+  if (r < 0.75) return 'armored';
+  return 'striker';
+}
+
+export function createEnemy(
+  stage: number,
+  isBoss: boolean,
+  rareSlimeBonusPct = 0,
+  forcedArchetype?: EnemyArchetype,
+): Enemy {
   const biome = getBiome(stage);
   const isSanctumBoss = isBoss && isSanctumFloor(stage);
   const isGreatDemon = isBoss && stage % 100 === 0;
   const isMidBoss = isBoss && !isSanctumBoss && isMidBossFloor(stage);
-  const isRareEscape = !isBoss && Math.random() < (0.12 + Math.max(0, rareSlimeBonusPct) / 100);
+  const isRareEscape =
+    !isBoss &&
+    forcedArchetype === undefined &&
+    Math.random() < 0.12 + Math.max(0, rareSlimeBonusPct) / 100;
 
   const pre100 = Math.min(stage - 1, 99);
   const post100 = Math.max(0, stage - 100);
   const mult = Math.pow(1.145, pre100) * Math.pow(1.14, post100);
   const atkMult = Math.pow(1.14, stage - 1);
 
-  const uwHpRamp = stage >= 101 ? 1 + 14.0 * (1 - Math.exp(-post100 / 28)) : 1;
+  const uwHpRamp = stage >= 101 ? 1 + 7.5 * (1 - Math.exp(-post100 / 28)) : 1;
   const uwAtkRamp = stage >= 101 ? 1 + 1.6 * (1 - Math.exp(-post100 / 28)) : 1;
 
   if (isRareEscape) {
+    const rareHp = Math.round(110 * mult * uwHpRamp);
     return {
       name: '👑 はぐれ黄金スライム',
       icon: '✨',
       spriteId: 'golden_slime',
+      archetype: 'normal',
       isBoss: false,
       isKeyKeeper: false,
       isMidBoss: false,
       isSanctumBoss: false,
       isGreatDemon: false,
       isRareEscape: true,
-      maxHp: Math.round(75 * mult * uwHpRamp),
-      hp: Math.round(75 * mult * uwHpRamp),
-      atk: Math.max(1, Math.round(4 * atkMult * uwAtkRamp)),
+      maxHp: rareHp,
+      hp: rareHp,
+      atk: Math.max(1, Math.round(3.8 * atkMult * uwAtkRamp)),
       defRate: 0.1,
     };
   }
@@ -57,13 +76,14 @@ export function createEnemy(stage: number, isBoss: boolean, rareSlimeBonusPct = 
         ? '【大魔王】深淵の大魔王'
         : `【覇王 ${stage}F】創世の魔王`
       : `【玄室の大ボス ${stage}F】${biome.boss.name}`;
-    const sanctumHpMult = stage >= 100 ? (stage === 100 ? 2.6 : 5.8) : 1;
+    const sanctumHpMult = stage >= 100 ? (stage === 100 ? 2.2 : 3.2) : 1;
     const sanctumAtkMult = stage >= 100 ? (stage === 100 ? 1.85 : 2.15) : 1;
-    const maxHp = Math.round(420 * mult * uwHpRamp * sanctumHpMult);
+    const maxHp = Math.round(390 * mult * uwHpRamp * sanctumHpMult);
     return {
       name,
       icon: isGreatDemon ? '😈' : biome.boss.icon,
       spriteId: isGreatDemon ? 'great_demon' : biome.boss.spriteId,
+      archetype: 'normal',
       isBoss: true,
       isKeyKeeper: false,
       isMidBoss: false,
@@ -78,22 +98,61 @@ export function createEnemy(stage: number, isBoss: boolean, rareSlimeBonusPct = 
   }
 
   const tpl = isBoss ? biome.boss : biome.mobs[randInt(0, biome.mobs.length - 1)];
-  const bossHpScale = isMidBoss ? 165 : isBoss ? 128 : 48;
-  const maxHp = Math.round(bossHpScale * mult * uwHpRamp);
-  const atk = Math.max(1, Math.round((isMidBoss ? 9.5 : isBoss ? 8.5 : 5.5) * atkMult * uwAtkRamp));
-  const defRate = isMidBoss
-    ? Math.min(0.55, 0.28 + stage * 0.0018)
-    : isBoss
-      ? Math.min(0.4, 0.15 + stage * 0.002)
-      : Math.min(0.22, Math.max(0, stage - 5) * 0.002);
+
+  if (isBoss) {
+    const bossHpScale = isMidBoss ? 270 : 210;
+    const maxHp = Math.round(bossHpScale * mult * uwHpRamp);
+    const atk = Math.max(1, Math.round((isMidBoss ? 9.8 : 8.8) * atkMult * uwAtkRamp));
+    const defRate = isMidBoss
+      ? Math.min(0.55, 0.28 + stage * 0.0018)
+      : Math.min(0.4, 0.16 + stage * 0.002);
+
+    return {
+      name: isMidBoss ? `【守護者】${tpl.name}` : `【BOSS】${tpl.name}`,
+      icon: tpl.icon,
+      spriteId: tpl.spriteId,
+      archetype: 'normal',
+      isBoss: true,
+      isKeyKeeper: true,
+      isMidBoss,
+      isSanctumBoss: false,
+      isGreatDemon: false,
+      isRareEscape: false,
+      maxHp,
+      hp: maxHp,
+      atk,
+      defRate,
+    };
+  }
+
+  // 通常雑魚：新5F到達時4〜6ターン / 強化後2〜3ターン / 過去階層1ターン無双
+  // 1〜5Fのみ序盤導入として緩やかに立ち上げる
+  const earlyRamp = stage <= 5 ? 0.62 + 0.08 * (stage - 1) : 1.0;
+  const archetype: EnemyArchetype = forcedArchetype ?? rollMobArchetype(stage);
+  const archHpMult = archetype === 'armored' ? 1.12 : archetype === 'striker' ? 0.76 : 1.0;
+  const archAtkMult = archetype === 'armored' ? 0.84 : archetype === 'striker' ? 1.3 : 1.0;
+
+  const baseDef = Math.min(0.22, Math.max(0, stage - 5) * 0.002);
+  const defRate =
+    archetype === 'armored'
+      ? Math.min(0.52, baseDef + 0.22)
+      : archetype === 'striker'
+        ? Math.max(0, baseDef - 0.06)
+        : baseDef;
+
+  const maxHp = Math.max(20, Math.round(180 * mult * uwHpRamp * earlyRamp * archHpMult));
+  const atk = Math.max(1, Math.round(4.6 * atkMult * uwAtkRamp * archAtkMult));
+  const namePrefix =
+    archetype === 'armored' ? '🛡️[重装]' : archetype === 'striker' ? '⚔️[強襲]' : '';
 
   return {
-    name: isMidBoss ? `【守護者】${tpl.name}` : isBoss ? `【BOSS】${tpl.name}` : tpl.name,
+    name: `${namePrefix}${tpl.name}`,
     icon: tpl.icon,
     spriteId: tpl.spriteId,
-    isBoss,
-    isKeyKeeper: isBoss,
-    isMidBoss,
+    archetype,
+    isBoss: false,
+    isKeyKeeper: false,
+    isMidBoss: false,
     isSanctumBoss: false,
     isGreatDemon: false,
     isRareEscape: false,

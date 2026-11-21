@@ -7,18 +7,19 @@ import { FairyWidget } from './components/FairyWidget';
 import type { WindowPos, WindowSize } from './components/FloatingWindow';
 import { MilestoneModal } from './components/MilestoneModal';
 import { OfflineModal } from './components/OfflineModal';
-import { PartyWindow } from './components/PartyWindow';
 import { StorageWindow } from './components/StorageWindow';
+import { SynthesisModal } from './components/SynthesisModal';
+import { getAccessoryCombo } from './game/accessories';
 import { playSfx } from './game/audio';
 import {
   CHEST_BATCH_MAX,
+  EQUIP_SLOT_ORDER,
+  EQUIP_SLOTS,
   MAX_BAG_SIZE,
   MAX_OFFLINE_SEC,
   MAX_STASH_SIZE,
-  PERSONAL_SLOTS,
   RARITIES,
   SAVE_KEY,
-  SHARED_ARTIFACT_SLOTS,
   SUBSTAT_STEP_INTERVAL,
 } from './game/constants';
 import {
@@ -33,30 +34,15 @@ import {
   fmt,
   formatUpgradeMessage,
   generateItem,
-  getMainStatVal,
   getMaxEquipLevel,
   getNextSelectedStorageId,
-  getReforgeCost,
   getSalvageValue,
   getUpgradeCost,
+  matchesStorageFilter,
   partitionBulkSalvage,
-  reforgeItemSubstat,
   rollSubstatMilestone,
   uid,
 } from './game/items';
-import {
-  allocateSkillPoint,
-  calcEnemyExpReward,
-  findBestAutoEquipCandidate,
-  getActiveMembers,
-  grantPartyExp,
-  JOB_DEFS,
-  JOB_ORDER,
-  recruitCharacter,
-  resetMemberSkills,
-  setActivePartySlot,
-  syncLeaderEquipped,
-} from './game/party';
 import {
   enterSanctumState,
   getNextManualStage,
@@ -64,27 +50,27 @@ import {
   resolveDefeatRetreatStage,
 } from './game/sanctum';
 import { computeOfflineRewards, createDefaultState, loadSavedGame, persistGame } from './game/save';
+import { executeSynthesis, type SynthesisExecutionResult } from './game/synthesis';
 import type {
   CrawlSizeMode,
   DragItemPayload,
-  EquippedSet,
+  EquipSlotKey,
   GachaPullResult,
   GameState,
   Item,
-  JobId,
   MoveStyle,
   OfflineSummary,
+  RarityId,
   SalvageBulkMode,
-  SlotKey,
   SortMode,
+  StorageFilter,
   WindowKey,
 } from './game/types';
 
-const WINDOW_LAYOUT_KEY = 'strip_hero_window_layout_v4';
+const WINDOW_LAYOUT_KEY = 'strip_hero_window_layout_v3';
 
 const DEFAULT_WINDOW_SIZES: Record<WindowKey, WindowSize> = {
-  party: { width: 700, height: 630 },
-  equipped: { width: 620, height: 650 },
+  equipped: { width: 620, height: 640 },
   bag: { width: 720, height: 640 },
   stash: { width: 720, height: 640 },
 };
@@ -92,7 +78,6 @@ const DEFAULT_WINDOW_SIZES: Record<WindowKey, WindowSize> = {
 function getDefaultWindowPositions(): Record<WindowKey, WindowPos> {
   const vw = typeof window !== 'undefined' ? window.innerWidth : 1440;
   return {
-    party: { x: Math.max(12, Math.min(vw - 712, 180)), y: 16 },
     equipped: { x: 12, y: 12 },
     bag: { x: Math.max(16, Math.min(vw - 732, 340)), y: 16 },
     stash: { x: Math.max(20, vw - 732), y: 20 },
@@ -105,7 +90,6 @@ function loadWindowLayout(): {
 } {
   const defaultPositions = getDefaultWindowPositions();
   const defaultSizes: Record<WindowKey, WindowSize> = {
-    party: { ...DEFAULT_WINDOW_SIZES.party },
     equipped: { ...DEFAULT_WINDOW_SIZES.equipped },
     bag: { ...DEFAULT_WINDOW_SIZES.bag },
     stash: { ...DEFAULT_WINDOW_SIZES.stash },
@@ -143,13 +127,11 @@ function loadWindowLayout(): {
     };
     return {
       positions: {
-        party: clampPos(parsed.positions?.party, defaultPositions.party),
         equipped: clampPos(parsed.positions?.equipped, defaultPositions.equipped),
         bag: clampPos(parsed.positions?.bag, defaultPositions.bag),
         stash: clampPos(parsed.positions?.stash, defaultPositions.stash),
       },
       sizes: {
-        party: clampSize(parsed.sizes?.party, defaultSizes.party, 560, 480),
         equipped: clampSize(parsed.sizes?.equipped, defaultSizes.equipped, 520, 480),
         bag: clampSize(parsed.sizes?.bag, defaultSizes.bag, 580, 480),
         stash: clampSize(parsed.sizes?.stash, defaultSizes.stash, 580, 480),
@@ -200,31 +182,27 @@ export default function App() {
     sizeMode: 'small',
   });
 
-  // Floating Window states (Party / Equipped / Bag / Stash)
+  // Floating Window states (Equipped / Bag / Stash)
   const [openWindows, setOpenWindows] = useState<Record<WindowKey, boolean>>({
-    party: false,
     equipped: false,
     bag: false,
     stash: false,
   });
-  const [windowOrder, setWindowOrder] = useState<WindowKey[]>(['party', 'equipped', 'bag', 'stash']);
+  const [windowOrder, setWindowOrder] = useState<WindowKey[]>(['equipped', 'bag', 'stash']);
   const [windowPositions, setWindowPositions] = useState<Record<WindowKey, WindowPos>>(
     () => loadWindowLayout().positions,
   );
   const [windowSizes, setWindowSizes] = useState<Record<WindowKey, WindowSize>>(
     () => loadWindowLayout().sizes,
   );
-  const [selectedMemberId, setSelectedMemberId] = useState<JobId>(
-    () => stateRef.current.party.activeIds[0],
-  );
-  const [selectedEquippedSlot, setSelectedEquippedSlot] = useState<SlotKey>('weapon');
+  const [selectedEquippedSlot, setSelectedEquippedSlot] = useState<EquipSlotKey>('weapon');
 
-  const [bagFilterSlot, setBagFilterSlot] = useState<'all' | SlotKey>('all');
+  const [bagFilterSlot, setBagFilterSlot] = useState<StorageFilter>('all');
   const [bagSortMode, setBagSortMode] = useState<SortMode>('newest');
   const [selectedBagId, setSelectedBagId] = useState<string | null>(null);
   const [bagMobileDetail, setBagMobileDetail] = useState(false);
 
-  const [stashFilterSlot, setStashFilterSlot] = useState<'all' | SlotKey>('all');
+  const [stashFilterSlot, setStashFilterSlot] = useState<StorageFilter>('all');
   const [stashSortMode, setStashSortMode] = useState<SortMode>('newest');
   const [selectedStashId, setSelectedStashId] = useState<string | null>(null);
   const [stashMobileDetail, setStashMobileDetail] = useState(false);
@@ -240,6 +218,8 @@ export default function App() {
   const [chestAutoSalvage, setChestAutoSalvage] = useState(true);
   const [isOpeningChests, setIsOpeningChests] = useState(false);
   const [chestResults, setChestResults] = useState<GachaPullResult[]>([]);
+
+  const [synthesisModalOpen, setSynthesisModalOpen] = useState(false);
 
   const [milestoneOpen, setMilestoneOpen] = useState(false);
   const [offlineSummary, setOfflineSummary] = useState<OfflineSummary | null>(null);
@@ -284,14 +264,8 @@ export default function App() {
       for (let i = summary.keptItems.length - 1; i >= 0; i--) {
         st.inventory.unshift(summary.keptItems[i]);
       }
-      const offlineExp = Math.round(calcEnemyExpReward(st.stage, false, false) * summary.kills * 0.65);
-      const levelUps = grantPartyExp(st.party, offlineExp);
-      const lvText =
-        levelUps.length > 0
-          ? ` / LvUP ${levelUps.map((u) => `${JOB_DEFS[u.id].name}Lv${u.newLevel}`).join('・')}`
-          : '';
       addLog(
-        `放置収益: ${summary.kills}体討伐 / +${fmt(summary.stones)}💎 / 装備${summary.keptItems.length} / 箱+${summary.chests}${lvText}`,
+        `放置収益: ${summary.kills}体討伐 / +${fmt(summary.stones)}💎 / 装備${summary.keptItems.length} / 箱+${summary.chests}`,
         '#38bdf8',
       );
       persistGame(st);
@@ -347,8 +321,9 @@ export default function App() {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         if (!isOpeningChestsRef.current) setChestModalOpen(false);
+        setSynthesisModalOpen(false);
         if (!isRollingUpgradeRef.current) {
-          setOpenWindows({ party: false, equipped: false, bag: false, stash: false });
+          setOpenWindows({ equipped: false, bag: false, stash: false });
         }
         setResetConfirmOpen(false);
       }
@@ -357,11 +332,10 @@ export default function App() {
     const handleResize = () => {
       if (window.innerWidth < 768) {
         setOpenWindows((prev) => {
-          const openList = (['party', 'equipped', 'bag', 'stash'] as WindowKey[]).filter((k) => prev[k]);
+          const openList = (['equipped', 'bag', 'stash'] as WindowKey[]).filter((k) => prev[k]);
           if (openList.length <= 1) return prev;
           const topOpen = [...windowOrderRef.current].reverse().find((k) => prev[k]) ?? openList[0];
           return {
-            party: topOpen === 'party',
             equipped: topOpen === 'equipped',
             bag: topOpen === 'bag',
             stash: topOpen === 'stash',
@@ -371,7 +345,6 @@ export default function App() {
         const maxX = Math.max(8, window.innerWidth - 220);
         const maxY = Math.max(8, window.innerHeight - 64);
         setWindowPositions((prev) => ({
-          party: { x: Math.max(8, Math.min(maxX, prev.party.x)), y: Math.max(8, Math.min(maxY, prev.party.y)) },
           equipped: { x: Math.max(8, Math.min(maxX, prev.equipped.x)), y: Math.max(8, Math.min(maxY, prev.equipped.y)) },
           bag: { x: Math.max(8, Math.min(maxX, prev.bag.x)), y: Math.max(8, Math.min(maxY, prev.bag.y)) },
           stash: { x: Math.max(8, Math.min(maxX, prev.stash.x)), y: Math.max(8, Math.min(maxY, prev.stash.y)) },
@@ -400,6 +373,7 @@ export default function App() {
   const fairySimActive =
     !hudMeta.paused &&
     !chestModalOpen &&
+    !synthesisModalOpen &&
     !milestoneOpen &&
     offlineSummary === null &&
     !resetConfirmOpen;
@@ -456,17 +430,9 @@ export default function App() {
   ): { item: Item; location: 'equipped' | 'bag' | 'stash' } | null => {
     if (!id) return null;
     const st = stateRef.current;
-    for (const memberId of JOB_ORDER) {
-      const m = st.party.roster[memberId];
-      for (const ps of ['weapon', 'armor'] as const) {
-        if (m.equipment[ps] && m.equipment[ps].id === id) {
-          return { item: m.equipment[ps], location: 'equipped' };
-        }
-      }
-    }
-    for (const ss of SHARED_ARTIFACT_SLOTS) {
-      if (st.equipped[ss] && st.equipped[ss].id === id) {
-        return { item: st.equipped[ss], location: 'equipped' };
+    for (const sk of EQUIP_SLOT_ORDER) {
+      if (st.equipped[sk] && st.equipped[sk].id === id) {
+        return { item: st.equipped[sk], location: 'equipped' };
       }
     }
     const bagFound = st.inventory.find((i) => i.id === id);
@@ -512,7 +478,7 @@ export default function App() {
     });
   };
 
-  const openWindow = (win: WindowKey, opts?: { slot?: SlotKey; toggle?: boolean }) => {
+  const openWindow = (win: WindowKey, opts?: { slot?: EquipSlotKey; toggle?: boolean }) => {
     if (isRollingUpgrade) return;
     const st = stateRef.current;
     const isMobile = typeof window !== 'undefined' && window.innerWidth < 768;
@@ -541,7 +507,6 @@ export default function App() {
       const nextOpen = opts?.toggle ? !prev[win] : true;
       if (isMobile && nextOpen) {
         return {
-          party: win === 'party',
           equipped: win === 'equipped',
           bag: win === 'bag',
           stash: win === 'stash',
@@ -559,39 +524,32 @@ export default function App() {
     setOpenWindows((prev) => ({ ...prev, [win]: false }));
   };
 
-  const handleEquipItem = (itemId: string) => {
+  const resolveEquipTargetSlot = (item: Item, explicitSlot?: EquipSlotKey): EquipSlotKey => {
+    if (item.slot === 'weapon' || item.slot === 'armor') {
+      return item.slot;
+    }
+    if (explicitSlot === 'acc1' || explicitSlot === 'acc2') {
+      return explicitSlot;
+    }
+    return selectedEquippedSlot === 'acc2' ? 'acc2' : 'acc1';
+  };
+
+  const handleEquipItem = (itemId: string, targetSlot?: EquipSlotKey) => {
     if (isRollingUpgrade) return;
     const st = stateRef.current;
-    const targetMember =
-      st.party.roster[selectedMemberId]?.unlocked
-        ? st.party.roster[selectedMemberId]
-        : st.party.roster[st.party.activeIds[0]];
-    const targetDef = JOB_DEFS[targetMember.id];
-
-    const swapIntoSlot = (nextItem: Item): Item => {
-      if (PERSONAL_SLOTS.includes(nextItem.slot as 'weapon' | 'armor')) {
-        const pSlot = nextItem.slot as 'weapon' | 'armor';
-        const prevItem = targetMember.equipment[pSlot];
-        targetMember.equipment[pSlot] = nextItem;
-        syncLeaderEquipped(st);
-        return prevItem;
-      }
-      const prevItem = st.equipped[nextItem.slot];
-      st.equipped[nextItem.slot] = nextItem;
-      return prevItem;
-    };
 
     const bagIdx = st.inventory.findIndex((i) => i.id === itemId);
     if (bagIdx !== -1) {
       const visibleBefore = filterAndSortStorageItems(st.inventory, bagFilterSlot, bagSortMode);
       const nextItem = st.inventory[bagIdx];
+      const equipSlot = resolveEquipTargetSlot(nextItem, targetSlot);
       st.inventory.splice(bagIdx, 1);
-      const prevItem = swapIntoSlot(nextItem);
+      const prevItem = st.equipped[equipSlot];
+      st.equipped[equipSlot] = nextItem;
       if (prevItem) st.inventory.unshift(prevItem);
 
-      setSelectedEquippedSlot(nextItem.slot);
-      const prevVisible =
-        prevItem && (bagFilterSlot === 'all' || bagFilterSlot === prevItem.slot);
+      setSelectedEquippedSlot(equipSlot);
+      const prevVisible = prevItem && matchesStorageFilter(prevItem, bagFilterSlot);
       setSelectedBagId(
         prevVisible ? prevItem.id : getNextSelectedStorageId(visibleBefore, itemId),
       );
@@ -599,13 +557,12 @@ export default function App() {
       setUpgradeFeedback('');
       setLastBoostedSubIdx(null);
       playSfx('upgrade', st.soundOn);
-      const isPersonal = PERSONAL_SLOTS.includes(nextItem.slot as 'weapon' | 'armor');
-      addLog(
-        isPersonal
-          ? `装備変更(${targetDef.name}): ${nextItem.name} を装着`
-          : `共有遺物変更: ${nextItem.name} を装着`,
-        RARITIES[nextItem.rarity].color,
-      );
+      const combo = getAccessoryCombo(st.equipped.acc1, st.equipped.acc2);
+      const suffix =
+        nextItem.slot === 'accessory'
+          ? ` → ${EQUIP_SLOTS[equipSlot].shortLabel}（共鳴: ${combo.icons}${combo.name}）`
+          : ' を装着';
+      addLog(`装備変更: ${nextItem.name}${suffix}`, RARITIES[nextItem.rarity].color);
       persistGame(st);
       forceRender();
       return;
@@ -615,13 +572,14 @@ export default function App() {
     if (stashIdx !== -1) {
       const visibleBefore = filterAndSortStorageItems(st.stash, stashFilterSlot, stashSortMode);
       const nextItem = st.stash[stashIdx];
+      const equipSlot = resolveEquipTargetSlot(nextItem, targetSlot);
       st.stash.splice(stashIdx, 1);
-      const prevItem = swapIntoSlot(nextItem);
+      const prevItem = st.equipped[equipSlot];
+      st.equipped[equipSlot] = nextItem;
       if (prevItem) st.stash.unshift(prevItem);
 
-      setSelectedEquippedSlot(nextItem.slot);
-      const prevVisible =
-        prevItem && (stashFilterSlot === 'all' || stashFilterSlot === prevItem.slot);
+      setSelectedEquippedSlot(equipSlot);
+      const prevVisible = prevItem && matchesStorageFilter(prevItem, stashFilterSlot);
       setSelectedStashId(
         prevVisible ? prevItem.id : getNextSelectedStorageId(visibleBefore, itemId),
       );
@@ -629,13 +587,12 @@ export default function App() {
       setUpgradeFeedback('');
       setLastBoostedSubIdx(null);
       playSfx('upgrade', st.soundOn);
-      const isPersonal = PERSONAL_SLOTS.includes(nextItem.slot as 'weapon' | 'armor');
-      addLog(
-        isPersonal
-          ? `装備変更(${targetDef.name}・倉庫): ${nextItem.name} を装着`
-          : `共有遺物変更(倉庫): ${nextItem.name} を装着`,
-        RARITIES[nextItem.rarity].color,
-      );
+      const combo = getAccessoryCombo(st.equipped.acc1, st.equipped.acc2);
+      const suffix =
+        nextItem.slot === 'accessory'
+          ? ` → ${EQUIP_SLOTS[equipSlot].shortLabel}（共鳴: ${combo.icons}${combo.name}）`
+          : ' を装着';
+      addLog(`装備変更(倉庫): ${nextItem.name}${suffix}`, RARITIES[nextItem.rarity].color);
       persistGame(st);
       forceRender();
     }
@@ -658,7 +615,7 @@ export default function App() {
         setSelectedBagId(getNextSelectedStorageId(visibleBefore, itemId));
         setBagMobileDetail(false);
       }
-      if (stashFilterSlot === 'all' || stashFilterSlot === moved.slot) {
+      if (matchesStorageFilter(moved, stashFilterSlot)) {
         setSelectedStashId(moved.id);
       }
       setUpgradeFeedback(`📦 ${moved.name} を倉庫へ預けました`);
@@ -679,7 +636,7 @@ export default function App() {
         setSelectedStashId(getNextSelectedStorageId(visibleBefore, itemId));
         setStashMobileDetail(false);
       }
-      if (bagFilterSlot === 'all' || bagFilterSlot === moved.slot) {
+      if (matchesStorageFilter(moved, bagFilterSlot)) {
         setSelectedBagId(moved.id);
       }
       setUpgradeFeedback(`🎒 ${moved.name} をバッグへ戻しました`);
@@ -689,9 +646,9 @@ export default function App() {
     }
   };
 
-  const handleDropEquip = (payload: DragItemPayload) => {
+  const handleDropEquip = (payload: DragItemPayload, targetSlot?: EquipSlotKey) => {
     setDraggedItem(null);
-    handleEquipItem(payload.itemId);
+    handleEquipItem(payload.itemId, targetSlot);
   };
 
   const handleDropMoveItem = (payload: DragItemPayload, target: 'bag' | 'stash') => {
@@ -834,21 +791,7 @@ export default function App() {
   const handleSalvageBulk = (mode: SalvageBulkMode) => {
     const st = stateRef.current;
     const fairyProfile = getFairyProfile(getFairyRank(st.maxStage, st.cleared100));
-    const activeMembers = getActiveMembers(st.party);
-    const weakestWeapon = activeMembers.reduce(
-      (min, m) => (getMainStatVal(m.equipment.weapon) < getMainStatVal(min) ? m.equipment.weapon : min),
-      activeMembers[0].equipment.weapon,
-    );
-    const weakestArmor = activeMembers.reduce(
-      (min, m) => (getMainStatVal(m.equipment.armor) < getMainStatVal(min) ? m.equipment.armor : min),
-      activeMembers[0].equipment.armor,
-    );
-    const baselineEquipped: EquippedSet = {
-      ...st.equipped,
-      weapon: weakestWeapon,
-      armor: weakestArmor,
-    };
-    const res = partitionBulkSalvage(st.inventory, mode, baselineEquipped, fairyProfile.salvageBonusPct);
+    const res = partitionBulkSalvage(st.inventory, mode, st.equipped, fairyProfile.salvageBonusPct);
 
     if (res.salvagedCount === 0) {
       setUpgradeFeedback(
@@ -1009,11 +952,38 @@ export default function App() {
     }
   };
 
-  const handleEquipFromChest = (resultId: string, itemId: string) => {
-    handleEquipItem(itemId);
+  const handleEquipFromChest = (resultId: string, itemId: string, targetSlot?: EquipSlotKey) => {
+    handleEquipItem(itemId, targetSlot);
     setChestResults((prev) =>
       prev.map((r) => (r.id === resultId ? { ...r, equippedFromModal: true } : r)),
     );
+  };
+
+  const handleSynthesize = (
+    sourceRarity: RarityId,
+    materialIds: string[],
+  ): SynthesisExecutionResult => {
+    const st = stateRef.current;
+    const res = executeSynthesis(st, sourceRarity, materialIds);
+    if (!res.ok) return res;
+
+    const rInfo = RARITIES[res.resultItem.rarity];
+    const refundNote = res.refundStones > 0 ? ` / 強化石+${fmt(res.refundStones)}💎返還` : '';
+    addLog(
+      `⚗️ ${res.recipe.isMythicReforge ? '再錬成' : '装備合成'}: [${rInfo.name}] ${res.resultItem.name}${refundNote}`,
+      rInfo.color,
+    );
+    playSfx(
+      res.resultItem.rarity === 4 ? 'mythic' : res.resultItem.rarity === 3 ? 'legend' : 'upgrade',
+      st.soundOn,
+    );
+    const visibleAfter = filterAndSortStorageItems(st.inventory, bagFilterSlot, bagSortMode);
+    if (!visibleAfter.some((i) => i.id === selectedBagId)) {
+      setSelectedBagId(visibleAfter[0]?.id ?? null);
+    }
+    persistGame(st);
+    forceRender();
+    return res;
   };
 
   const handleConfirmReset = () => {
@@ -1032,7 +1002,8 @@ export default function App() {
     setFairyClaimMsg('');
     setChestResults([]);
     setChestModalOpen(false);
-    setOpenWindows({ party: false, equipped: false, bag: false, stash: false });
+    setSynthesisModalOpen(false);
+    setOpenWindows({ equipped: false, bag: false, stash: false });
     setBagMobileDetail(false);
     setStashMobileDetail(false);
     setDraggedItem(null);
@@ -1045,7 +1016,6 @@ export default function App() {
       // ignore
     }
     stateRef.current = createDefaultState();
-    setSelectedMemberId(stateRef.current.party.activeIds[0]);
     setSelectedEquippedSlot('weapon');
     setSelectedBagId(null);
     setSelectedStashId(null);
@@ -1089,126 +1059,6 @@ export default function App() {
     forceRender();
   };
 
-  const handleAllocateSkill = (memberId: JobId, skillId: string) => {
-    const st = stateRef.current;
-    const member = st.party.roster[memberId];
-    if (!member || !allocateSkillPoint(member, skillId)) return;
-    playSfx('upgrade', st.soundOn);
-    persistGame(st);
-    forceRender();
-  };
-
-  const handleResetSkills = (memberId: JobId) => {
-    const st = stateRef.current;
-    const member = st.party.roster[memberId];
-    if (!member) return;
-    const refunded = resetMemberSkills(member);
-    if (refunded <= 0) return;
-    playSfx('drop', st.soundOn);
-    addLog(`🔄 ${JOB_DEFS[memberId].name}のスキルをリセット（SP+${refunded}返還）`, '#38bdf8');
-    persistGame(st);
-    forceRender();
-  };
-
-  const handleRecruitMember = (memberId: JobId) => {
-    const st = stateRef.current;
-    const res = recruitCharacter(st, memberId);
-    if (!res.ok) return;
-    const def = JOB_DEFS[memberId];
-    playSfx('legend', st.soundOn);
-    addLog(
-      res.paidStones > 0
-        ? `🎉 ${def.name}（${def.jobName}）が仲間に加入！（💎-${res.paidStones}）`
-        : `🎉 ${def.name}（${def.jobName}）が仲間に加入しました！`,
-      def.accentColor,
-    );
-    setSelectedMemberId(memberId);
-    persistGame(st);
-    forceRender();
-  };
-
-  const handleSwapPartySlot = (slotIdx: 0 | 1 | 2, memberId: JobId) => {
-    const st = stateRef.current;
-    if (!setActivePartySlot(st.party, slotIdx, memberId)) return;
-    syncLeaderEquipped(st);
-    const def = JOB_DEFS[memberId];
-    playSfx('upgrade', st.soundOn);
-    addLog(`👥 編成変更: 枠#${slotIdx + 1}に ${def.name}（${def.jobName}）を配置`, def.accentColor);
-    persistGame(st);
-    forceRender();
-  };
-
-  const handleReforgeSubstat = (itemId: string, subIdx: number) => {
-    if (isRollingUpgrade) return;
-    const st = stateRef.current;
-    const found = findItemById(itemId);
-    if (!found) return;
-    const item = found.item;
-    const cost = getReforgeCost(item);
-    if (st.stones < cost) return;
-    const result = reforgeItemSubstat(item, subIdx);
-    if (!result) return;
-    st.stones -= cost;
-    item.spentStones = (item.spentStones || 0) + cost;
-    setLastBoostedSubIdx(subIdx);
-    setUpgradeFeedback(`🔥 再鍛造: ${result.label} +${result.newSub.val}${result.unit}（-${fmt(cost)}💎）`);
-    playSfx('roulette', st.soundOn);
-    persistGame(st);
-    forceRender();
-  };
-
-  const handleAutoEquip = (memberId: JobId) => {
-    if (isRollingUpgrade) return;
-    const st = stateRef.current;
-    const member = st.party.roster[memberId];
-    if (!member || !member.unlocked) return;
-
-    let changed = 0;
-    for (const ps of ['weapon', 'armor'] as const) {
-      const best = findBestAutoEquipCandidate(st.inventory, member.equipment[ps], ps);
-      if (best) {
-        const idx = st.inventory.findIndex((i) => i.id === best.id);
-        if (idx !== -1) {
-          const prev = member.equipment[ps];
-          st.inventory.splice(idx, 1);
-          member.equipment[ps] = best;
-          st.inventory.unshift(prev);
-          changed += 1;
-        }
-      }
-    }
-    for (const ss of SHARED_ARTIFACT_SLOTS) {
-      const best = findBestAutoEquipCandidate(st.inventory, st.equipped[ss], ss);
-      if (best) {
-        const idx = st.inventory.findIndex((i) => i.id === best.id);
-        if (idx !== -1) {
-          const prev = st.equipped[ss];
-          st.inventory.splice(idx, 1);
-          st.equipped[ss] = best;
-          st.inventory.unshift(prev);
-          changed += 1;
-        }
-      }
-    }
-
-    if (changed === 0) {
-      setUpgradeFeedback(`⚡ ${JOB_DEFS[memberId].name}はすでに最適装備です`);
-      return;
-    }
-
-    syncLeaderEquipped(st);
-    playSfx('upgrade', st.soundOn);
-    setUpgradeFeedback(`⚡ ${JOB_DEFS[memberId].name}: ${changed}箇所を最適装備に更新しました`);
-    addLog(`⚡ おまかせ装備(${JOB_DEFS[memberId].name}): ${changed}箇所を更新`, '#38bdf8');
-    persistGame(st);
-    forceRender();
-  };
-
-  const activeTargetMember =
-    st.party.roster[selectedMemberId]?.unlocked
-      ? st.party.roster[selectedMemberId]
-      : st.party.roster[st.party.activeIds[0]];
-
   return (
     <div className="flex h-full w-full flex-col overflow-hidden bg-[#070b14]">
       <DungeonViewport
@@ -1223,6 +1073,7 @@ export default function App() {
           kills: st.kills,
           maxDmg: st.maxDmg,
           cleared100: st.cleared100,
+          comboId: getAccessoryCombo(st.equipped.acc1, st.equipped.acc2).id,
           floorEncounters: hudMeta.floorEncounters,
           stepsToStairs: hudMeta.stepsToStairs,
           stairsFound: hudMeta.stairsFound,
@@ -1242,7 +1093,13 @@ export default function App() {
         onRequestSave={() => persistGame(stateRef.current)}
         onEnterSanctum={handleEnterSanctum}
         onRetreatSanctum={handleRetreatSanctum}
-        throttleCanvas={chestModalOpen || milestoneOpen || offlineSummary !== null || resetConfirmOpen}
+        throttleCanvas={
+          chestModalOpen ||
+          synthesisModalOpen ||
+          milestoneOpen ||
+          offlineSummary !== null ||
+          resetConfirmOpen
+        }
         fairyOverlay={
           <FairyWidget
             fairy={st.fairy}
@@ -1259,14 +1116,7 @@ export default function App() {
       <BottomStrip
         state={st}
         openWindows={openWindows}
-        selectedMemberId={activeTargetMember.id}
         draggedItem={draggedItem}
-        onSelectMember={(id) => {
-          setSelectedMemberId(id);
-          setUpgradeFeedback('');
-          setLastBoostedSubIdx(null);
-        }}
-        onToggleParty={() => openWindow('party', { toggle: true })}
         onPrevStage={() => {
           const target = getPrevManualStage(st.stage);
           if (target === null) return;
@@ -1302,6 +1152,7 @@ export default function App() {
         onDropEquip={handleDropEquip}
         onDropMoveItem={handleDropMoveItem}
         onOpenChests={() => setChestModalOpen(true)}
+        onOpenSynthesis={() => setSynthesisModalOpen(true)}
         onToggleSound={() => {
           st.soundOn = !st.soundOn;
           if (st.soundOn) playSfx('upgrade', true);
@@ -1316,33 +1167,6 @@ export default function App() {
         }}
       />
 
-      <PartyWindow
-        open={openWindows.party}
-        zIndex={getWindowZ('party')}
-        position={windowPositions.party}
-        windowSize={windowSizes.party}
-        party={st.party}
-        equipped={st.equipped}
-        maxStage={st.maxStage}
-        stones={st.stones}
-        cleared100={st.cleared100}
-        selectedMemberId={selectedMemberId}
-        onFocus={() => focusWindow('party')}
-        onMovePosition={(pos) => moveWindowPosition('party', pos)}
-        onResizeWindow={(sz) => resizeWindowSize('party', sz)}
-        onSelectMember={(id) => setSelectedMemberId(id)}
-        onAllocateSkill={handleAllocateSkill}
-        onResetSkills={handleResetSkills}
-        onRecruitMember={handleRecruitMember}
-        onSwapPartySlot={handleSwapPartySlot}
-        onInspectEquipment={(memberId) => {
-          setSelectedMemberId(memberId);
-          openWindow('equipped', { slot: 'weapon', toggle: false });
-        }}
-        onOpenWindow={(win) => openWindow(win)}
-        onClose={() => closeWindow('party')}
-      />
-
       <EquippedWindow
         open={openWindows.equipped}
         zIndex={getWindowZ('equipped')}
@@ -1350,9 +1174,7 @@ export default function App() {
         windowSize={windowSizes.equipped}
         stones={st.stones}
         equipped={st.equipped}
-        party={st.party}
         cleared100={st.cleared100}
-        selectedMemberId={activeTargetMember.id}
         bagCount={st.inventory.length}
         stashCount={st.stash.length}
         selectedSlot={selectedEquippedSlot}
@@ -1364,11 +1186,6 @@ export default function App() {
         onFocus={() => focusWindow('equipped')}
         onMovePosition={(pos) => moveWindowPosition('equipped', pos)}
         onResizeWindow={(sz) => resizeWindowSize('equipped', sz)}
-        onSelectMember={(id) => {
-          setSelectedMemberId(id);
-          setUpgradeFeedback('');
-          setLastBoostedSubIdx(null);
-        }}
         onSelectSlot={(slot) => {
           setSelectedEquippedSlot(slot);
           setUpgradeFeedback('');
@@ -1376,8 +1193,6 @@ export default function App() {
         }}
         onDropEquip={handleDropEquip}
         onUpgradeItem={handleUpgradeItem}
-        onReforgeSubstat={handleReforgeSubstat}
-        onAutoEquip={handleAutoEquip}
         onToggleLock={handleToggleLock}
         onOpenWindow={(win) => openWindow(win)}
         onClose={() => closeWindow('equipped')}
@@ -1391,8 +1206,6 @@ export default function App() {
         windowSize={windowSizes.bag}
         stones={st.stones}
         equipped={st.equipped}
-        party={st.party}
-        selectedMemberId={activeTargetMember.id}
         items={st.inventory}
         otherCount={st.stash.length}
         filterSlot={bagFilterSlot}
@@ -1407,11 +1220,6 @@ export default function App() {
         onFocus={() => focusWindow('bag')}
         onMovePosition={(pos) => moveWindowPosition('bag', pos)}
         onResizeWindow={(sz) => resizeWindowSize('bag', sz)}
-        onSelectMember={(id) => {
-          setSelectedMemberId(id);
-          setUpgradeFeedback('');
-          setLastBoostedSubIdx(null);
-        }}
         onChangeFilter={(slot) => {
           setBagFilterSlot(slot);
           const nextVisible = filterAndSortStorageItems(st.inventory, slot, bagSortMode);
@@ -1433,7 +1241,6 @@ export default function App() {
         onEquipItem={handleEquipItem}
         onMoveItem={(id) => handleMoveItemBetweenStorage(id, 'stash')}
         onUpgradeItem={handleUpgradeItem}
-        onReforgeSubstat={handleReforgeSubstat}
         onToggleLock={handleToggleLock}
         onSalvageSingle={handleSalvageSingle}
         onSalvageBulk={handleSalvageBulk}
@@ -1441,6 +1248,7 @@ export default function App() {
         onDragEndItem={() => setDraggedItem(null)}
         onDropFromOther={(payload) => handleDropMoveItem(payload, 'bag')}
         onOpenWindow={(win) => openWindow(win)}
+        onOpenSynthesis={() => setSynthesisModalOpen(true)}
         onClose={() => closeWindow('bag')}
         salvageBonusPct={fairyProfile.salvageBonusPct}
       />
@@ -1453,8 +1261,6 @@ export default function App() {
         windowSize={windowSizes.stash}
         stones={st.stones}
         equipped={st.equipped}
-        party={st.party}
-        selectedMemberId={activeTargetMember.id}
         items={st.stash}
         otherCount={st.inventory.length}
         filterSlot={stashFilterSlot}
@@ -1469,11 +1275,6 @@ export default function App() {
         onFocus={() => focusWindow('stash')}
         onMovePosition={(pos) => moveWindowPosition('stash', pos)}
         onResizeWindow={(sz) => resizeWindowSize('stash', sz)}
-        onSelectMember={(id) => {
-          setSelectedMemberId(id);
-          setUpgradeFeedback('');
-          setLastBoostedSubIdx(null);
-        }}
         onChangeFilter={(slot) => {
           setStashFilterSlot(slot);
           const nextVisible = filterAndSortStorageItems(st.stash, slot, stashSortMode);
@@ -1495,7 +1296,6 @@ export default function App() {
         onEquipItem={handleEquipItem}
         onMoveItem={(id) => handleMoveItemBetweenStorage(id, 'bag')}
         onUpgradeItem={handleUpgradeItem}
-        onReforgeSubstat={handleReforgeSubstat}
         onToggleLock={handleToggleLock}
         onSalvageSingle={handleSalvageSingle}
         onDragStartItem={(payload) => setDraggedItem(payload)}
@@ -1511,7 +1311,6 @@ export default function App() {
         chests={st.chests}
         mythicChests={st.mythicChests}
         maxStage={st.maxStage}
-        targetMemberName={JOB_DEFS[activeTargetMember.id].name}
         autoSalvageChecked={chestAutoSalvage}
         isOpening={isOpeningChests}
         results={chestResults}
@@ -1519,6 +1318,22 @@ export default function App() {
         onPull={handlePullChests}
         onEquipFromResult={handleEquipFromChest}
         onClose={() => !isOpeningChests && setChestModalOpen(false)}
+      />
+
+      <SynthesisModal
+        open={synthesisModalOpen}
+        inventory={st.inventory}
+        maxStage={st.maxStage}
+        cleared100={st.cleared100}
+        autoSalvageRarity={st.autoSalvageRarity}
+        onChangeAutoSalvage={(val) => {
+          st.autoSalvageRarity = val;
+          persistGame(st);
+          forceRender();
+        }}
+        onSynthesize={handleSynthesize}
+        onEquipResult={handleEquipItem}
+        onClose={() => setSynthesisModalOpen(false)}
       />
 
       <MilestoneModal open={milestoneOpen} onClose={() => setMilestoneOpen(false)} />

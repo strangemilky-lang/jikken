@@ -1,4 +1,4 @@
-import type { FloorPalette, MainStatType, RarityId, SlotKey, SubStatKey } from './types';
+import type { EquipSlotKey, FloorPalette, MainStatType, RarityId, SubStatKey } from './types';
 
 export const SAVE_KEY = 'strip_hero_idle_save_v1';
 export const CRAWL_SIZE_KEY = 'strip_hero_crawl_size_v2';
@@ -46,26 +46,63 @@ export const RARITIES: RarityInfo[] = [
   { id: 4, name: 'ミシック', color: '#f472b6', border: '#ec4899', bg: 'linear-gradient(135deg, rgba(244,114,182,0.20), rgba(56,189,248,0.16), rgba(251,191,36,0.16))', mainMult: 3.70, subMult: 1.08, maxLv: MYTHIC_MAX_EQUIP_LEVEL, initSubs: 4, dustBase: 160 },
 ];
 
-export const SLOT_ORDER: SlotKey[] = ['weapon', 'armor', 'ring', 'necklace', 'gauntlets', 'boots'];
+export const EQUIP_SLOT_ORDER: EquipSlotKey[] = ['weapon', 'armor', 'acc1', 'acc2'];
+export const SLOT_ORDER: EquipSlotKey[] = EQUIP_SLOT_ORDER;
 
-export interface SlotDef {
-  key: SlotKey;
+export interface EquipSlotDef {
+  key: EquipSlotKey;
   label: string;
+  shortLabel: string;
   icon: string;
-  mainType: MainStatType;
-  mainLabel: string;
-  unit: string;
+  acceptsItemSlot: 'weapon' | 'armor' | 'accessory';
+  mainType?: MainStatType;
+  mainLabel?: string;
+  unit?: string;
   isFixedCap: boolean;
 }
 
-export const SLOTS: Record<SlotKey, SlotDef> = {
-  weapon: { key: 'weapon', label: '武器', icon: '⚔️', mainType: 'atk', mainLabel: '攻撃力', unit: '', isFixedCap: false },
-  armor: { key: 'armor', label: '防具', icon: '🛡️', mainType: 'hp', mainLabel: '最大HP', unit: '', isFixedCap: false },
-  ring: { key: 'ring', label: '指輪', icon: '💍', mainType: 'critRate', mainLabel: '会心率', unit: '%', isFixedCap: true },
-  necklace: { key: 'necklace', label: '首飾り', icon: '📿', mainType: 'critDmg', mainLabel: '会心ダメ', unit: '%', isFixedCap: true },
-  gauntlets: { key: 'gauntlets', label: '小手', icon: '🧤', mainType: 'atkPct', mainLabel: '攻撃力', unit: '%', isFixedCap: true },
-  boots: { key: 'boots', label: '靴', icon: '🥾', mainType: 'dmgPct', mainLabel: '与ダメージ', unit: '%', isFixedCap: true },
+export const EQUIP_SLOTS: Record<EquipSlotKey, EquipSlotDef> = {
+  weapon: {
+    key: 'weapon',
+    label: '武器',
+    shortLabel: '武器',
+    icon: '⚔️',
+    acceptsItemSlot: 'weapon',
+    mainType: 'atk',
+    mainLabel: '攻撃力',
+    unit: '',
+    isFixedCap: false,
+  },
+  armor: {
+    key: 'armor',
+    label: '防具',
+    shortLabel: '防具',
+    icon: '🛡️',
+    acceptsItemSlot: 'armor',
+    mainType: 'hp',
+    mainLabel: '最大HP',
+    unit: '',
+    isFixedCap: false,
+  },
+  acc1: {
+    key: 'acc1',
+    label: 'アクセサリ1',
+    shortLabel: 'アクセ1',
+    icon: '💍',
+    acceptsItemSlot: 'accessory',
+    isFixedCap: true,
+  },
+  acc2: {
+    key: 'acc2',
+    label: 'アクセサリ2',
+    shortLabel: 'アクセ2',
+    icon: '📿',
+    acceptsItemSlot: 'accessory',
+    isFixedCap: true,
+  },
 };
+
+export const SLOTS = EQUIP_SLOTS;
 
 export interface SubStatDef {
   key: SubStatKey;
@@ -93,80 +130,6 @@ export const SUB_MAP: Record<SubStatKey, SubStatDef> = {
   bossDmg: SUB_POOL[5],
 };
 
-export const PERSONAL_SLOTS: SlotKey[] = ['weapon', 'armor'];
-export const SHARED_ARTIFACT_SLOTS: SlotKey[] = ['ring', 'necklace', 'gauntlets', 'boots'];
-
-export interface UniqueAffixDef {
-  key: 'vampiric' | 'first_strike' | 'cleave' | 'double_hit' | 'thorns' | 'treasure';
-  icon: string;
-  label: string;
-  desc: (val: number) => string;
-  min: number;
-  max: number;
-  slots: SlotKey[];
-}
-
-export const UNIQUE_AFFIX_POOL: UniqueAffixDef[] = [
-  {
-    key: 'vampiric',
-    icon: '🩸',
-    label: '吸血の刻印',
-    desc: (v) => `与ダメージの ${v}% 分 HP吸収`,
-    min: 4,
-    max: 12,
-    slots: ['weapon', 'ring', 'gauntlets'],
-  },
-  {
-    key: 'first_strike',
-    icon: '⚡',
-    label: '先制必殺',
-    desc: (v) => `HP満タンの敵へ与ダメ +${v}%`,
-    min: 18,
-    max: 45,
-    slots: ['weapon', 'necklace', 'boots'],
-  },
-  {
-    key: 'cleave',
-    icon: '🌪️',
-    label: '範囲波及',
-    desc: (v) => `他の同室/隣接敵へ ${v}% 波及ダメ`,
-    min: 20,
-    max: 50,
-    slots: ['weapon', 'gauntlets', 'boots'],
-  },
-  {
-    key: 'double_hit',
-    icon: '⚔️',
-    label: '連撃の極意',
-    desc: (v) => `${v}% で追加追撃（60%ダメ）`,
-    min: 14,
-    max: 34,
-    slots: ['weapon', 'ring', 'necklace'],
-  },
-  {
-    key: 'thorns',
-    icon: '🛡️',
-    label: '棘の反撃',
-    desc: (v) => `被弾時、攻撃力の ${v}% で反撃`,
-    min: 30,
-    max: 75,
-    slots: ['armor', 'gauntlets', 'boots'],
-  },
-  {
-    key: 'treasure',
-    icon: '💎',
-    label: '強運の加護',
-    desc: (v) => `強化石獲得 +${v}%（パーティ効果）`,
-    min: 10,
-    max: 25,
-    slots: ['armor', 'ring', 'necklace', 'boots'],
-  },
-];
-
-export const UNIQUE_AFFIX_MAP = Object.fromEntries(
-  UNIQUE_AFFIX_POOL.map((d) => [d.key, d]),
-) as Record<UniqueAffixDef['key'], UniqueAffixDef>;
-
 export const PREFIXES: string[][] = [
   ['古びた', '鉄の', '旅人の', '見習いの', '標準の'],
   ['熟練の', '鋭利な', '蒼き', '鋼の', '魔導の'],
@@ -175,7 +138,7 @@ export const PREFIXES: string[][] = [
   ['虹輝の', '無限の', '終焉の', '天地創造の', '神話級'],
 ];
 
-export const BASE_NAMES: Record<SlotKey, Array<{ name: string; icon: string }>> = {
+export const BASE_NAMES: Record<'weapon' | 'armor', Array<{ name: string; icon: string }>> = {
   weapon: [
     { name: '剣', icon: '🗡️' }, { name: '大剣', icon: '⚔️' }, { name: '戦斧', icon: '🪓' },
     { name: '長槍', icon: '🔱' }, { name: '刀', icon: '🗡️' }, { name: '聖剣', icon: '⚔️' },
@@ -183,18 +146,6 @@ export const BASE_NAMES: Record<SlotKey, Array<{ name: string; icon: string }>> 
   armor: [
     { name: '戦衣', icon: '👕' }, { name: '胸当て', icon: '🦺' }, { name: '重鎧', icon: '🛡️' },
     { name: '外套', icon: '🥋' }, { name: '聖鎧', icon: '🛡️' },
-  ],
-  ring: [
-    { name: '指輪', icon: '💍' }, { name: '印章環', icon: '💍' }, { name: '魔石環', icon: '💠' },
-  ],
-  necklace: [
-    { name: '首飾り', icon: '📿' }, { name: '護符', icon: '🧿' }, { name: '宝玉鎖', icon: '📿' },
-  ],
-  gauntlets: [
-    { name: '小手', icon: '🧤' }, { name: '籠手', icon: '🧤' }, { name: '手甲', icon: '🥊' },
-  ],
-  boots: [
-    { name: '革靴', icon: '🥾' }, { name: '具足', icon: '🥾' }, { name: '疾風靴', icon: '👟' },
   ],
 };
 

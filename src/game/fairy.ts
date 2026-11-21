@@ -1,7 +1,7 @@
 import type { FairyBuffKind, FairyState, GameState } from './types';
 
 export const FAIRY_BASE_COOLDOWN_SEC = 90;
-export const FAIRY_KILL_REDUCE_SEC = 5;
+export const FAIRY_KILL_REDUCE_SEC = 8;
 export const FAIRY_FLOOR_REDUCE_SEC = 12;
 export const FAIRY_BUFF_DURATION_MS = 60_000;
 
